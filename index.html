@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>India Engine</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="bar">
+    <b>India Engine</b>
+    <button id="btn-base">Cargar assets base (.zip)</button>
+    <button id="btn-mod">Agregar mod (.zip)</button>
+    <button id="btn-folder">Agregar mod (carpeta)</button>
+    <span id="status"></span>
+  </div>
+  <input id="in-base" type="file" accept=".zip" hidden />
+  <input id="in-mod" type="file" accept=".zip" multiple hidden />
+  <input id="in-folder" type="file" webkitdirectory hidden />
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
