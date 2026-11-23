@@ -1,0 +1,51 @@
+name: Deploy India Engine to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  # Release del repo que contiene el zip del juego base
+  ASSETS_RELEASE_TAG: Claude
+  ASSETS_ZIP: FNF-PsychEngine-0.7.3.zip
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Descargar assets base desde la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$ASSETS_RELEASE_TAG" --pattern "$ASSETS_ZIP" --dir "$RUNNER_TEMP"
+      - name: Extraer assets a public/
+        run: npm run extract -- "$RUNNER_TEMP/$ASSETS_ZIP"
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
