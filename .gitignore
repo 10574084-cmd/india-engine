@@ -1,0 +1,7 @@
+node_modules
+dist
+# Assets del juego base (no se suben al repo): se generan con `npm run extract`
+public/assets
+public/mods
+public/vfs-manifest.json
+*.zip
