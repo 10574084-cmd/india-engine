@@ -9,11 +9,19 @@ import { SwagSong, loadChart, stageForSong } from './chart';
 import { Character, preloadCharacter, clearCharCache } from './character';
 import {
   Note, StrumNote, SWAG_WIDTH, COL_ARRAY, SING_ANIMS, DEFAULT_NOTE_SKIN, ARROW_RGB, ARROW_RGB_PIXEL,
-  loadNoteAtlas, setupNoteAnims, setupStrumAnims,
+  loadNoteAtlas, loadEndsAtlas, setupNoteAnims, setupStrumAnims,
 } from './note';
 import { Bar, HealthIcon, loadIconAtlas } from './hud';
 import { StageFile, defaultStage, loadStageFile, buildNativeStage } from './stage';
 import { ScriptHost } from '../lua/host';
+import { StageImpl, createStageImpl } from './stages';
+
+const LOAD_TIPS = [
+  'Consejo: pulsa Escape para pausar.',
+  'Consejo: los mods se arrastran sobre la ventana (zip o carpeta).',
+  'Consejo: golpea las notas en el momento justo para un "Sick!".',
+  'Consejo: activa Botplay en Opciones para ver el chart.',
+];
 
 export interface PlayOpts {
   song: string;            // nombre mostrado / carpeta
@@ -52,6 +60,7 @@ export class PlayState implements State {
   layerBack: Drawable[] = [];
   layerChars: Drawable[] = [];
   layerFront: Drawable[] = [];
+  layerFrontMark = 0;
   layerHud: Drawable[] = [];
   layerOther: Drawable[] = [];
   luaSprites = new Map<string, Drawable>();
@@ -67,6 +76,7 @@ export class PlayState implements State {
 
   // notas
   noteAtlas: Atlas | null = null;
+  endsAtlas: Atlas | null = null;
   unspawnNotes: Note[] = [];
   notes: Note[] = [];
   eventNotes: EventNote[] = [];
@@ -134,6 +144,14 @@ export class PlayState implements State {
   private pendingChars = new Set<string>();
 
   scripts!: ScriptHost;
+  stageImpl: StageImpl | null = null;
+  asyncInit = true;
+  loadLabel = 'Preparando…'; loadFrac = 0; loadShown = 0; loadAlpha = 1; loadT = 0;
+  loadTip = LOAD_TIPS[Math.floor(Math.random() * LOAD_TIPS.length)];
+  gameOverDefs = { char: 'bf-dead', sound: 'fnf_loss_sfx', loop: 'gameOver', end: 'gameOverEnd' };
+  pixelGameOver() { this.gameOverDefs = { char: 'bf-pixel-dead', sound: 'fnf_loss_sfx-pixel', loop: 'gameOver-pixel', end: 'gameOverEnd-pixel' }; }
+  onInitError() { this.finishExit(false); }
+  progress(label: string, frac: number) { this.loadLabel = label; this.loadFrac = frac; }
   iconBump = { p1: 1, p2: 1 };
   boyfriendGroupOrder = 0;
 
@@ -152,6 +170,7 @@ export class PlayState implements State {
     const e = this.e, assets = e.assets;
     assets.currentMod = this.opts.mod;
     clearCharCache();
+    this.progress('Cargando chart…', 0.05);
     const song = await loadChart(assets, this.opts.song, this.opts.diffSuffix);
     if (!song) throw new Error(`No se encontró el chart de "${this.opts.song}" (${this.opts.diffName})`);
     this.song = song;
@@ -172,6 +191,7 @@ export class PlayState implements State {
     this.stage = (await loadStageFile(assets, this.stageName)) ?? defaultStage();
     assets.currentLevel = this.stage.directory ? this.stage.directory.toLowerCase() : null;
     this.isPixelStage = !!this.stage.isPixelStage || this.stage.stageUI === 'pixel';
+    this.stageImpl = createStageImpl(this);
     this.defaultCamZoom = this.stage.defaultZoom ?? 0.9;
     this.cameraSpeed = this.stage.camera_speed ?? 1;
     [this.BF_X, this.BF_Y] = this.stage.boyfriend ?? [770, 100];
@@ -181,20 +201,26 @@ export class PlayState implements State {
     this.opponentCameraOffset = this.stage.camera_opponent ?? [0, 0];
     this.girlfriendCameraOffset = this.stage.camera_girlfriend ?? [0, 0];
 
+    this.progress('Cargando interfaz…', 0.12);
     // fuentes e imágenes de interfaz
     await assets.font('vcr', 'fonts/vcr.ttf');
     this.skin = song.arrowSkin && song.arrowSkin.length > 1 ? song.arrowSkin : DEFAULT_NOTE_SKIN;
-    this.noteAtlas = await loadNoteAtlas(assets, this.skin);
+    this.noteAtlas = await loadNoteAtlas(assets, this.skin, this.isPixelStage);
+    if (this.isPixelStage) this.endsAtlas = await loadEndsAtlas(assets, this.skin);
     this.splashAtlas = await assets.atlas('noteSplashes/' + (song.splashSkin && song.splashSkin.length > 1 ? song.splashSkin : 'noteSplashes'))
       ?? await assets.atlas('noteSplashes/noteSplashes');
 
     // eventos y personajes (precarga)
     this.collectEvents();
-    const names = new Set<string>([song.player1, song.player2, song.gfVersion || 'gf']);
+    const names = new Set<string>([song.player1, song.player2, song.gfVersion || this.stageImpl?.defaultGF || 'gf']);
     for (const ev of this.eventNotes) if (ev.event === 'Change Character' && ev.value2) names.add(ev.value2.trim());
-    const dead = song.gameOverChar || 'bf-dead';
+    // los stages pixel cambian el game over por defecto
+    if (this.stageImpl && !this.stage.hide_girlfriend) void 0;
+    const dead = song.gameOverChar || (this.stageImpl ? this.gameOverDefs.char : 'bf-dead');
     names.add(dead);
-    for (const n of names) if (n) await preloadCharacter(assets, n);
+    this.progress('Cargando personajes…', 0.2);
+    { let i = 0; for (const n of names) { if (n) await preloadCharacter(assets, n); this.progress('Cargando personajes…', 0.2 + 0.15 * (++i / names.size)); } }
+    this.progress('Cargando sonidos…', 0.4);
 
     // sonidos
     this.hitsoundBuf = await assets.sound('hitsound');
@@ -202,6 +228,7 @@ export class PlayState implements State {
     const pix = this.isPixelStage ? '-pixel' : '';
     this.introSounds = await Promise.all(['intro3', 'intro2', 'intro1', 'introGo'].map(n => assets.sound(n + pix).then(b => b ?? assets.sound(n))));
 
+    this.progress('Cargando música…', 0.5);
     // audio de la canción
     const sf = this.songName;
     const instBuf = await assets.songFile(sf, 'Inst');
@@ -221,17 +248,25 @@ export class PlayState implements State {
     this.cams.game.zoom = this.cams.game.defaultZoom = this.defaultCamZoom;
     this.cams.hud.zoom = 1;
 
+    this.progress('Preparando scripts…', 0.65);
     // scripts (Lua): se crean antes de montar el stage para que onCreate pueda añadir sprites
     this.scripts = new ScriptHost(this);
     await this.scripts.loadAll();
 
     // stage nativo (solo si ningún script lo reemplaza)
-    await buildNativeStage(this);
+    this.progress('Montando escenario…', 0.75);
+    if (this.scripts.stageHandledByScript) this.stageImpl = null;
+    this.layerFrontMark = this.layerFront.length;
+    if (this.stageImpl) {
+      this.stageImpl.phase = 'create';
+      await this.stageImpl.create();
+      for (const ev of this.eventNotes) await this.stageImpl.eventPushed(ev);
+    } else await buildNativeStage(this);
     this.scripts.call('onLoadStage');
 
     // personajes
     this.gf = null;
-    const gfName = song.gfVersion || 'gf';
+    const gfName = song.gfVersion || this.stageImpl?.defaultGF || 'gf';
     if (!this.stage.hide_girlfriend && gfName) {
       this.gf = new Character(this.GF_X, this.GF_Y, gfName, false, assets);
       this.startCharPos(this.gf, true);
@@ -246,7 +281,15 @@ export class PlayState implements State {
     this.layerChars.push(this.boyfriend);
     if (this.dad.curCharacter.startsWith("gf") && this.gf) { this.dad.x = this.gf.x; this.dad.y = this.gf.y; this.gf.visible = false; }
 
+    if (this.gf && gfName === 'pico-speaker') {
+      const pc = await assets.json<any>(`data/${this.songName}/picospeaker.json`);
+      const notes: number[][] = [];
+      for (const sec of pc?.song?.notes ?? []) for (const n of sec.sectionNotes ?? []) notes.push([+n[0], +n[1]]);
+      notes.sort((a, b) => a[0] - b[0]);
+      this.gf.animationNotes = notes;
+    }
     // HUD
+    this.progress('Montando interfaz…', 0.88);
     await this.buildHud();
     this.generateStaticArrows(0); this.generateStaticArrows(1);
     this.generateSong();
@@ -254,7 +297,9 @@ export class PlayState implements State {
     this.cams.game.scroll.x = this.camFollow.x - W / 2; this.cams.game.scroll.y = this.camFollow.y - H / 2;
     this.recalcRating(false);
     this.updateScoreText();
+    if (this.stageImpl) { this.stageImpl.phase = 'post'; await this.stageImpl.createPost(); }
     this.scripts.call('onCreatePost');
+    this.progress('¡Listo!', 1);
     this.mode = 'play';
     this.startCountdown();
   }
@@ -351,7 +396,7 @@ export class PlayState implements State {
       s.downScroll = down;
       s.camera = 'hud';
       s.scrollFactor.x = s.scrollFactor.y = 0;
-      if (this.noteAtlas) setupStrumAnims(s, this.noteAtlas, this.skin);
+      if (this.noteAtlas) setupStrumAnims(s, this.noteAtlas, this.skin, this.isPixelStage);
       s.x += SWAG_WIDTH * i + 50 + (W / 2) * player;
       if (player === 0 && mid) { s.x += 310; if (i > 1) s.x += W / 2 + 25; }
       s.alpha = 0;
@@ -384,7 +429,7 @@ export class PlayState implements State {
         n.scrollFactor.x = n.scrollFactor.y = 0;
         n.useRGBShader = !song.disableNoteRGB;
         this.applyNoteType(n, sec.altAnim);
-        if (this.noteAtlas) setupNoteAnims(n, this.noteAtlas, this.skin);
+        if (this.noteAtlas) setupNoteAnims(n, this.noteAtlas, this.skin, this.isPixelStage);
         this.applyNoteShader(n);
         if (oldNote) (n as any).prevNote = oldNote;
         oldNote = n;
@@ -451,6 +496,7 @@ export class PlayState implements State {
   private async doCountdownTick(i: number) {
     const assets = this.e.assets;
     this.callBeatDances(i);
+    this.stageImpl?.countdownTick(i);
     this.scripts.call('onCountdownTick', [i]);
     if (i > 3) return;
     const snd = this.introSounds[i];
@@ -480,6 +526,9 @@ export class PlayState implements State {
   // ====================================================================== bucle
   update(dt: number) {
     const inp = this.e.input;
+    this.loadT += dt;
+    this.loadShown += (this.loadFrac - this.loadShown) * Math.min(1, dt * 10);
+    if (this.mode !== 'load' && this.loadShown > 0.97 && this.loadAlpha > 0) this.loadAlpha = Math.max(0, this.loadAlpha - dt * 2.5);
     if (this.mode === 'load') return;
     if (this.mode === 'pause') { this.updatePause(); return; }
     if (this.mode === 'dead') { this.updateDead(dt); return; }
@@ -500,6 +549,8 @@ export class PlayState implements State {
 
     // la animación de los personajes corre siempre
     const rate = this.playbackRate;
+    if (this.gf) this.gf.songPos = this.cond.songPosition;
+    this.stageImpl?.update(dt);
     this.gf?.update(dt * rate, this.stepCrochet, rate);
     this.dad.update(dt * rate, this.stepCrochet, rate);
     this.boyfriend.update(dt * rate, this.stepCrochet, rate);
@@ -570,6 +621,7 @@ export class PlayState implements State {
 
   private beatHit() {
     const beat = this.curBeat;
+    this.stageImpl?.beatHit(beat);
     this.iconBump.p1 = this.iconBump.p2 = 1.2;
     this.iconP1.scale.x = this.iconP1.scale.y = 1.2; this.iconP2.scale.x = this.iconP2.scale.y = 1.2;
     if (this.camZooming && this.prefs.camZooms && this.cams.game.zoom < 1.35 && this.camZoomingMult > 0 && beat % (4 * 1) === 0) {
@@ -627,6 +679,7 @@ export class PlayState implements State {
         default: { const n = parseInt(s); return isNaN(n) || n === 0 ? this.boyfriend : (n === 1 ? this.dad : this.gf); }
       }
     };
+    this.stageImpl?.eventCalled(name, v1, v2, f1, f2);
     switch (name) {
       case 'Hey!': {
         const t = (v1 ?? '').toLowerCase().trim();
@@ -1083,7 +1136,7 @@ export class PlayState implements State {
   }
 
   private spawnSplash(n: Note) {
-    if (!this.splashAtlas || this.song.disableNoteRGB && false) return;
+    if (!this.splashAtlas || this.isPixelStage) return;
     const strum = this.playerStrums[n.noteData];
     const s = new Sprite();
     s.setAtlas(this.splashAtlas);
@@ -1162,7 +1215,7 @@ export class PlayState implements State {
     this.inst?.stop(); this.vocals?.stop(); this.opponentVocals?.stop();
     this.scripts.call('onGameOverStart');
     const assets = this.e.assets;
-    const name = this.song.gameOverChar || 'bf-dead';
+    const name = this.song.gameOverChar || this.gameOverDefs.char;
     try {
       await preloadCharacter(assets, name);
       const bf = this.boyfriend;
@@ -1171,7 +1224,7 @@ export class PlayState implements State {
       this.deadChar = c; c.playAnim('firstDeath', true);
       this.deadCam.zoom = this.cams.game.zoom; this.deadCam.scroll.x = this.cams.game.scroll.x; this.deadCam.scroll.y = this.cams.game.scroll.y;
     } catch { this.deadChar = null; }
-    this.e.audio.playSound(await assets.sound(this.song.gameOverSound || 'fnf_loss_sfx'), 1);
+    this.e.audio.playSound(await assets.sound(this.song.gameOverSound || this.gameOverDefs.sound), 1);
   }
   private updateDead(dt: number) {
     this.deadT += dt;
@@ -1185,7 +1238,7 @@ export class PlayState implements State {
     if (this.deadState !== 'confirm' && inp.justPressed('accept')) {
       this.deadState = 'confirm'; c?.playAnim('deathConfirm', true);
       this.deadTrack?.stop();
-      void this.e.assets.music(this.song.gameOverEnd || 'gameOverEnd').then(b => { this.deadTrack = this.e.audio.track(b); this.deadTrack.play(0); });
+      void this.e.assets.music(this.song.gameOverEnd || this.gameOverDefs.end).then(b => { this.deadTrack = this.e.audio.track(b); this.deadTrack.play(0); });
       this.fadeTarget = 1; this.endTimer = -1; setTimeout(() => { if (this.opts.onRestart) this.opts.onRestart(); }, 2200);
     }
     if (this.deadState !== 'confirm' && inp.justPressed('back')) { this.deadTrack?.stop(); this.finishExit(false); }
@@ -1193,7 +1246,7 @@ export class PlayState implements State {
     this.tweens.update(dt);
   }
   private async startDeadMusic() {
-    const b = await this.e.assets.music(this.song.gameOverLoop || 'gameOver');
+    const b = await this.e.assets.music(this.song.gameOverLoop || this.gameOverDefs.loop);
     this.deadTrack = this.e.audio.track(b, true); this.deadTrack.play(0);
   }
 
@@ -1219,7 +1272,7 @@ export class PlayState implements State {
 
   // ====================================================================== dibujo
   render(ctx: CanvasRenderingContext2D) {
-    if (this.mode === 'load') return;
+    if (this.mode === 'load') { this.drawLoading(ctx, 1); return; }
     if (this.mode === 'dead') {
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
       this.deadCam.begin(ctx);
@@ -1244,12 +1297,42 @@ export class PlayState implements State {
       cam.end(ctx);
     }
     if (this.mode === 'pause') this.drawPause(ctx);
+    if (this.loadAlpha > 0.01) this.drawLoading(ctx, this.loadAlpha);
   }
+
+  private drawLoading(ctx: CanvasRenderingContext2D, a: number) {
+    const t = this.loadT;
+    ctx.save(); ctx.globalAlpha = a;
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#16162b'); g.addColorStop(1, '#05050c');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    const font = (px: number) => { ctx.font = `${px}px "vcr", "VCR OSD Mono", monospace`; };
+    const txt = (s: string, x: number, y: number, px: number, col = '#fff') => { font(px); ctx.lineWidth = 6; ctx.strokeStyle = '#000'; ctx.strokeText(s, x, y); ctx.fillStyle = col; ctx.fillText(s, x, y); };
+    txt(ENGINE_NAME.toUpperCase(), W / 2, 150, 54, '#ffcc33');
+    txt(this.opts.song.replace(/-/g, ' ').toUpperCase(), W / 2, 290, 64);
+    txt(this.opts.diffName.toUpperCase() + (this.opts.mod ? '  ·  ' + this.opts.mod : ''), W / 2, 350, 28, '#9fb4ff');
+    const dots = '.'.repeat(1 + Math.floor(t * 3) % 3);
+    txt(this.loadLabel.replace(/…$/, '') + dots, W / 2, 500, 26);
+    const bw = 640, bh = 22, bx = (W - bw) / 2, by = 540;
+    ctx.fillStyle = '#000'; ctx.fillRect(bx - 4, by - 4, bw + 8, bh + 8);
+    ctx.fillStyle = '#2a2a44'; ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = '#ffcc33'; ctx.fillRect(bx, by, bw * Math.min(1, this.loadShown), bh);
+    txt(Math.round(Math.min(1, this.loadShown) * 100) + '%', W / 2, by + bh + 34, 20, '#cfd6ff');
+    txt(this.loadTip, W / 2, H - 50, 18, '#8a90b8');
+    ctx.restore();
+  }
+
 
   private drawNotes(ctx: CanvasRenderingContext2D, cam: Camera) {
     // colas primero (detrás de las cabezas)
     for (const n of this.notes) {
       if (!n.hasSustain || !n.atlas) continue;
+      if (this.isPixelStage && this.endsAtlas) {
+        const ea = this.endsAtlas, d = n.noteData % 4;
+        const pal = ARROW_RGB_PIXEL[d];
+        n.drawSustain(ctx, cam, { atlas: ea, piece: ea.frames[d], end: ea.frames[d + 4], src: n.useRGBShader ? ea.recolored(pal[0], pal[1], pal[2]) : ea.img } as any);
+        continue;
+      }
       const col = COL_ARRAY[n.noteData];
       const frames = n.atlas.frames;
       const piece = frames.find(f => f.name.startsWith(col + ' hold piece')), end = frames.find(f => f.name.startsWith(col + ' hold end'));

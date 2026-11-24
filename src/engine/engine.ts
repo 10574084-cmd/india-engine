@@ -8,6 +8,9 @@ import { W, H } from './display';
 
 export interface State {
   init?(): Promise<void>;
+  /** si es true, el estado se muestra de inmediato y init() corre en segundo plano (pantalla de carga) */
+  asyncInit?: boolean;
+  onInitError?(e: Error): void;
   update(dt: number): void;
   render(ctx: CanvasRenderingContext2D): void;
   destroy(): void;
@@ -72,6 +75,18 @@ export class Engine {
       const old = this.state;
       const next = typeof make === 'function' ? await make() : make;
       this.tweens.clear();
+      if (next.asyncInit && next.init) {
+        this.state = next;
+        old?.destroy();
+        this.switching = false;
+        next.init().catch(err => {
+          console.error(err);
+          if (this.state !== next) return;
+          this.toast('No se pudo cargar: ' + (err as Error).message, '#ff7777', 8);
+          if (next.onInitError) next.onInitError(err as Error);
+        });
+        return;
+      }
       if (next.init) await next.init();
       this.state = next;
       old?.destroy();
