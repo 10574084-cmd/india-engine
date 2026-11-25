@@ -1,3 +1,4 @@
+import { BUILTIN_SCRIPTS } from '../builtin/scripts';
 import { LuaFactory, LuaEngine } from 'wasmoon';
 import glueWasm from 'wasmoon/dist/glue.wasm?url';
 import type { PlayState, EventNote } from '../game/playstate';
@@ -126,6 +127,13 @@ export class ScriptHost {
     ps.song.notes.forEach(s => s.sectionNotes.forEach(n => { if (typeof n[3] === 'string' && n[3]) types.add(n[3]); }));
     for (const t of types) { addFile(`custom_notetypes/${t}.lua`); addFile(`custom_notetypes/${t}.hx`); }
 
+    for (const b of BUILTIN_SCRIPTS) {
+      if (!ps.prefs.scripts?.[b.id]) continue;
+      await this.prefetch(b.src);
+      const s = new LuaScript(this, 'builtin/' + b.id + '.lua', b.id + '.lua', '');
+      this.scripts.push(s);
+      await s.init(b.src);
+    }
     for (const q of queue) {
       let src: string;
       try { src = await a.vfs.text(q.path); } catch { continue; }
@@ -370,6 +378,13 @@ export class ScriptHost {
       case 'PlayState': return { ...this.psProxy(), instance: ps, SONG: ps.song, curStage: ps.stageName, isStoryMode: !!ps.opts.isStory, storyDifficulty: 1 };
       case 'Conductor': return ps.cond;
       case 'MainMenuState': return { psychEngineVersion: PSYCH_COMPAT_VERSION };
+      case 'GameOverSubstate': {
+        const d = ps.gameOverDefs;
+        return { get characterName() { return d.char; }, set characterName(v: string) { d.char = v; ps.song.gameOverChar = v; },
+          get deathSoundName() { return d.sound; }, set deathSoundName(v: string) { d.sound = v; ps.song.gameOverSound = v; },
+          get loopSoundName() { return d.loop; }, set loopSoundName(v: string) { d.loop = v; ps.song.gameOverLoop = v; },
+          get endSoundName() { return d.end; }, set endSoundName(v: string) { d.end = v; ps.song.gameOverEnd = v; } };
+      }
       case 'Paths': return {};
     }
     return undefined;
@@ -485,6 +500,9 @@ export class ScriptHost {
     def('getVar', (k: string) => host.vars.has(k) ? host.vars.get(k) : null);
     def('addLuaScript', (f: string) => { void host.addScript(f); });
     def('removeLuaScript', (f: string) => { for (const s of host.scripts) if (s.path.toLowerCase().includes(String(f).toLowerCase())) s.close(); });
+    def('setScoreText', (t = '') => { ps.scoreTxt.text = String(t); return true; });
+    def('callOnScripts', (fn: string, args: any[] = []) => host.call(fn, Array.isArray(args) ? args : Object.values(args as any)));
+    def('loadMultipleFrames', () => undefined);
     def('callOnLuas', (fn: string, args: any[] = []) => { host.call(fn, Array.isArray(args) ? args : Object.values(args ?? {})); });
     def('setOnLuas', (k: string, v: any) => { for (const s of host.scripts) if (!s.closed) s.lua.global.set(k, v); });
     const hxOf = () => { if (!script.hx) script.hx = new HxScript(host, script.path, script.name, script.modFolder); return script.hx; };

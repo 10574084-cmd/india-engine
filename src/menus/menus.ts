@@ -1,3 +1,4 @@
+import { BUILTIN_SCRIPTS } from '../builtin/scripts';
 import { Engine, State, ENGINE_NAME, ENGINE_VERSION } from '../engine/engine';
 import { W, H } from '../engine/display';
 import { getScore } from '../engine/save';
@@ -89,6 +90,7 @@ export class MenuState implements State {
       { name: 'Practice Mode', get: () => p.practice, set: () => { p.practice = !p.practice; } },
       { name: 'Hitsound', get: () => p.hitsoundVolume > 0, set: () => { p.hitsoundVolume = p.hitsoundVolume > 0 ? 0 : 0.5; } },
       { name: 'Time Bar: ' + p.timeBarType, get: () => true, set: () => { const o = ['Time Left', 'Time Elapsed', 'Song Name', 'Disabled'] as const; p.timeBarType = o[(o.indexOf(p.timeBarType) + 1) % 4]; } },
+      ...BUILTIN_SCRIPTS.map(b => ({ name: b.name, toggle: true, desc: b.desc, get: () => !!p.scripts[b.id], set: () => { p.scripts[b.id] = !p.scripts[b.id]; } })),
       { name: 'Note Offset: ' + p.noteOffset + 'ms  (←/→)', get: () => true, set: () => {} },
     ];
   }
@@ -206,11 +208,17 @@ export class MenuState implements State {
     }
     if (this.screen === 'options') {
       this.text(ctx, 'OPTIONS', W / 2, 60, 56, 'center');
-      this.options.forEach((o, i) => {
+      const all = this.options as any[], VIS = 12;
+      const first = Math.max(0, Math.min(all.length - VIS, this.optSel - 6));
+      all.slice(first, first + VIS).forEach((o, k) => {
+        const i = first + k, y = 125 + k * 42;
         const on = o.get();
-        this.text(ctx, o.name, 330, 130 + i * 44, 30, 'left', i === this.optSel ? 1 : 0.5);
-        if (!/:|\(/.test(o.name)) this.text(ctx, on ? 'ON' : 'OFF', 900, 130 + i * 44, 30, 'left', i === this.optSel ? 1 : 0.5, on ? '#7fff7f' : '#ff8f8f');
+        this.text(ctx, o.name, 330, y, 28, 'left', i === this.optSel ? 1 : 0.5);
+        if (!/:|\(/.test(o.name)) this.text(ctx, on ? 'ON' : 'OFF', 900, y, 28, 'left', i === this.optSel ? 1 : 0.5, on ? '#7fff7f' : '#ff8f8f');
+        if (o.desc && i === this.optSel) this.text(ctx, o.desc, W / 2, H - 30, 18, 'center', 0.7);
       });
+      if (first > 0) this.text(ctx, '▲', W / 2, 100, 20, 'center', 0.6);
+      if (first + VIS < all.length) this.text(ctx, '▼', W / 2, 125 + VIS * 42, 20, 'center', 0.6);
       return;
     }
     if (this.screen === 'credits') {
