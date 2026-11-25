@@ -5,7 +5,7 @@ import { TweenManager } from '../engine/tween';
 import { Track } from '../engine/audio';
 import { formatSongPath } from '../engine/assets';
 import { saveScore } from '../engine/save';
-import { SwagSong, loadChart, stageForSong } from './chart';
+import { SwagSong, loadChart, stageForSong, chartStats } from './chart';
 import { Character, preloadCharacter, clearCharCache } from './character';
 import {
   Note, StrumNote, SWAG_WIDTH, COL_ARRAY, SING_ANIMS, DEFAULT_NOTE_SKIN, ARROW_RGB, ARROW_RGB_PIXEL,
@@ -147,6 +147,7 @@ export class PlayState implements State {
 
   scripts!: ScriptHost;
   stageImpl: StageImpl | null = null;
+  chartInfo = { player: 0, opponent: 0, notesOver8: 0, sustains: 0, sections: 0 };
   // --- cutscenes y substates
   cutsceneVideo: VideoSprite | null = null;
   dialogueBox: DialogueBox | null = null;
@@ -182,6 +183,10 @@ export class PlayState implements State {
     const song = await loadChart(assets, this.opts.song, this.opts.diffSuffix);
     if (!song) throw new Error(`No se encontró el chart de "${this.opts.song}" (${this.opts.diffName})`);
     this.song = song;
+    this.chartInfo = chartStats(song);
+    console.info('[chart]', this.opts.song, this.opts.diffName, JSON.stringify(this.chartInfo));
+    if (this.chartInfo.notesOver8 > 0) this.e.toast(`Chart con notas de más de 8 teclas (${this.chartInfo.notesOver8}): India Engine solo soporta 4 teclas`, '#ffcc66', 6);
+    else if (this.chartInfo.opponent === 0 || this.chartInfo.player === 0) this.e.toast(`Chart raro: ${this.chartInfo.player} notas tuyas y ${this.chartInfo.opponent} del oponente`, '#ffcc66', 6);
     this.songName = formatSongPath(song.song || this.opts.song);
     this.cond.setBPM(song.bpm);
     this.cond.mapBPMChanges(song as any);

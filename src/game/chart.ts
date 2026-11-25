@@ -12,6 +12,25 @@ export interface SwagSong {
   [k: string]: any;
 }
 
+/** Interpreta booleanos de charts raros: true/false, 1/0, "true"/"false". */
+function toBool(v: any): boolean {
+  if (typeof v === 'string') { const t = v.trim().toLowerCase(); return !(t === '' || t === 'false' || t === '0' || t === 'no'); }
+  return !!v;
+}
+
+/** Resumen de un chart: cuántas notas caen de cada lado (para diagnosticar charts raros). */
+export function chartStats(s: SwagSong) {
+  let player = 0, opponent = 0, high = 0, sustains = 0;
+  for (const sec of s.notes) for (const n of sec.sectionNotes) {
+    if (n[1] < 0) continue;
+    const must = n[1] > 3 ? !sec.mustHitSection : sec.mustHitSection;
+    if (must) player++; else opponent++;
+    if (n[1] > 7) high++;
+    if (n[2] > 0) sustains++;
+  }
+  return { player, opponent, notesOver8: high, sustains, sections: s.notes.length };
+}
+
 /** Carga data/<cancion>/<cancion>[-dif].json con las mismas reglas que Song.hx (incluye charts viejos). */
 export async function loadChart(assets: Assets, songFolder: string, difficultySuffix: string, fileName?: string): Promise<SwagSong | null> {
   const folder = formatSongPath(songFolder);
@@ -24,12 +43,25 @@ export async function loadChart(assets: Assets, songFolder: string, difficultySu
   if (s.gfVersion == null) { s.gfVersion = s.player3 ?? ''; }
   s.player1 ??= 'bf'; s.player2 ??= 'dad'; s.speed ??= 1; s.needsVoices ??= true;
   s.bpm ??= 100;
+  let bad = 0;
   for (const sec of s.notes) {
-    sec.sectionNotes ??= [];
-    sec.sectionBeats = sec.sectionBeats ?? (sec.lengthInSteps ? sec.lengthInSteps / 4 : 4);
-    sec.mustHitSection = !!sec.mustHitSection;
-    sec.gfSection = !!sec.gfSection;
+    sec.sectionNotes = Array.isArray(sec.sectionNotes) ? sec.sectionNotes : [];
+    sec.sectionBeats = Number(sec.sectionBeats ?? (sec.lengthInSteps ? sec.lengthInSteps / 4 : 4)) || 4;
+    sec.mustHitSection = toBool(sec.mustHitSection);
+    sec.gfSection = toBool(sec.gfSection);
+    sec.altAnim = toBool(sec.altAnim);
+    sec.changeBPM = toBool(sec.changeBPM);
+    // notas: tiempo y dirección siempre numéricos (algunos charts los guardan como texto)
+    sec.sectionNotes = sec.sectionNotes.filter(n => {
+      if (!Array.isArray(n)) { bad++; return false; }
+      n[0] = Number(n[0]); n[1] = Number(n[1]);
+      if (n[2] !== undefined && typeof n[2] !== 'string') n[2] = Number(n[2]) || 0;
+      else if (typeof n[2] === 'string' && n[2] !== '' && !isNaN(Number(n[2]))) n[2] = Number(n[2]);
+      if (isNaN(n[0]) || isNaN(n[1])) { bad++; return false; }
+      return true;
+    });
   }
+  if (bad) console.warn(`[chart] ${bad} notas inválidas ignoradas en ${folder}`);
   if (!s.events) {
     s.events = [];
     for (const sec of s.notes) {
