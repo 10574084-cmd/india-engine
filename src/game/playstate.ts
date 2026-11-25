@@ -12,7 +12,7 @@ import {
   loadNoteAtlas, loadEndsAtlas, setupNoteAnims, setupStrumAnims,
 } from './note';
 import { Bar, HealthIcon, loadIconAtlas } from './hud';
-import { StageFile, defaultStage, loadStageFile, buildNativeStage } from './stage';
+import { StageFile, StageLayout, defaultStage, loadStageFile, buildNativeStage, applyStageLayout } from './stage';
 import { ScriptHost } from '../lua/host';
 import { StageImpl, createStageImpl } from './stages';
 import { VideoSprite, resolveVideo } from './video';
@@ -30,6 +30,7 @@ export interface PlayOpts {
   diffName: string;        // "Hard"
   diffSuffix: string;      // "-hard"
   mod: string;             // carpeta de mod ('' = juego base)
+  stage?: string;          // fuerza un stage (pruebas)
   isStory?: boolean;
   onExit: (r: { finished: boolean; score: number }) => void;
   onRestart?: () => void;
@@ -147,6 +148,7 @@ export class PlayState implements State {
 
   scripts!: ScriptHost;
   stageImpl: StageImpl | null = null;
+  stageLayout: StageLayout | null = null;
   chartInfo = { player: 0, opponent: 0, notesOver8: 0, sustains: 0, sections: 0 };
   // --- cutscenes y substates
   cutsceneVideo: VideoSprite | null = null;
@@ -200,7 +202,7 @@ export class PlayState implements State {
     this.sectionStartSteps = song.notes.map(s => { const a = acc; acc += Math.round((s.sectionBeats ?? 4) * 4); return a; });
 
     // stage
-    this.stageName = stageForSong(song);
+    this.stageName = this.opts.stage || stageForSong(song);
     this.stage = (await loadStageFile(assets, this.stageName)) ?? defaultStage();
     assets.currentLevel = this.stage.directory ? this.stage.directory.toLowerCase() : null;
     this.isPixelStage = !!this.stage.isPixelStage || this.stage.stageUI === 'pixel';
@@ -292,6 +294,7 @@ export class PlayState implements State {
     this.boyfriend = new Character(this.BF_X, this.BF_Y, song.player1, true, assets);
     this.startCharPos(this.boyfriend);
     this.layerChars.push(this.boyfriend);
+    applyStageLayout(this);
     if (this.dad.curCharacter.startsWith("gf") && this.gf) { this.dad.x = this.gf.x; this.dad.y = this.gf.y; this.gf.visible = false; }
 
     if (this.gf && gfName === 'pico-speaker') {

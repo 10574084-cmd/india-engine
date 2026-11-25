@@ -267,7 +267,13 @@ export class Sprite implements Drawable {
     this.origin.x = this.frameWidth / 2; this.origin.y = this.frameHeight / 2;
     return this;
   }
-  loadGraphic(img: Src) { return this.setAtlas(Atlas.single(img)); }
+  loadGraphic(img: Src | Atlas, animated = false, w = 0, h = 0) {
+    if (img instanceof Atlas) {
+      if (animated && w > 0 && h > 0) return this.setAtlas(Atlas.grid(img.img, w, h));
+      return this.setAtlas(img);
+    }
+    return this.setAtlas(Atlas.single(img));
+  }
   makeGraphic(w: number, h: number, color: number) {
     const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
     const g = c.getContext('2d')!;
@@ -330,6 +336,13 @@ export class Sprite implements Drawable {
           get frames() { return s.cur!.frames; }, get looped() { return s.cur!.loop; } };
       },
       get frameIndex() { return s.curFrame; }, set frameIndex(v: number) { s.staticFrame = v; s.curFrame = v; s.syncFrame(); },
+      add: (name: string, frames: number[], fps = 30, loop = true) => s.addByFrames(name, frames, fps, loop),
+      addByPrefix: (name: string, prefix: string, fps = 30, loop = true) => s.addByPrefix(name, prefix, fps, loop),
+      addByIndices: (name: string, prefix: string, indices: number[], postfix = '', fps = 30, loop = true) => s.addByIndices(name, prefix, indices, postfix, fps, loop),
+      play: (name: string, force = false, reversed = false, frame = 0) => s.play(name, force, reversed, frame),
+      pause: () => { s.paused = true; }, resume: () => { s.paused = false; }, stop: () => { s.finish(); },
+      exists: (name: string) => s.hasAnim(name),
+      get finished() { return s.finished; },
       get name() { return s.animName; },
     };
   }
