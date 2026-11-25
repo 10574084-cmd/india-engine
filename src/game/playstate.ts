@@ -5,14 +5,14 @@ import { TweenManager } from '../engine/tween';
 import { Track } from '../engine/audio';
 import { formatSongPath } from '../engine/assets';
 import { saveScore } from '../engine/save';
-import { SwagSong, loadChart, stageForSong } from './chart';
+import { SwagSong, loadChart, stageForSong, chartStats } from './chart';
 import { Character, preloadCharacter, clearCharCache } from './character';
 import {
   Note, StrumNote, SWAG_WIDTH, COL_ARRAY, SING_ANIMS, DEFAULT_NOTE_SKIN, ARROW_RGB, ARROW_RGB_PIXEL,
   loadNoteAtlas, loadEndsAtlas, setupNoteAnims, setupStrumAnims,
 } from './note';
 import { Bar, HealthIcon, loadIconAtlas } from './hud';
-import { StageFile, defaultStage, loadStageFile, buildNativeStage } from './stage';
+import { StageFile, StageLayout, defaultStage, loadStageFile, buildNativeStage, applyStageLayout } from './stage';
 import { ScriptHost } from '../lua/host';
 import { StageImpl, createStageImpl } from './stages';
 import { VideoSprite, resolveVideo } from './video';
@@ -30,6 +30,7 @@ export interface PlayOpts {
   diffName: string;        // "Hard"
   diffSuffix: string;      // "-hard"
   mod: string;             // carpeta de mod ('' = juego base)
+  stage?: string;          // fuerza un stage (pruebas)
   isStory?: boolean;
   onExit: (r: { finished: boolean; score: number }) => void;
   onRestart?: () => void;
@@ -147,6 +148,8 @@ export class PlayState implements State {
 
   scripts!: ScriptHost;
   stageImpl: StageImpl | null = null;
+  stageLayout: StageLayout | null = null;
+  chartInfo = { player: 0, opponent: 0, notesOver8: 0, sustains: 0, sections: 0 };
   // --- cutscenes y substates
   cutsceneVideo: VideoSprite | null = null;
   dialogueBox: DialogueBox | null = null;
@@ -182,6 +185,10 @@ export class PlayState implements State {
     const song = await loadChart(assets, this.opts.song, this.opts.diffSuffix);
     if (!song) throw new Error(`No se encontró el chart de "${this.opts.song}" (${this.opts.diffName})`);
     this.song = song;
+    this.chartInfo = chartStats(song);
+    console.info('[chart]', this.opts.song, this.opts.diffName, JSON.stringify(this.chartInfo));
+    if (this.chartInfo.notesOver8 > 0) this.e.toast(`Chart con notas de más de 8 teclas (${this.chartInfo.notesOver8}): India Engine solo soporta 4 teclas`, '#ffcc66', 6);
+    else if (this.chartInfo.opponent === 0 || this.chartInfo.player === 0) this.e.toast(`Chart raro: ${this.chartInfo.player} notas tuyas y ${this.chartInfo.opponent} del oponente`, '#ffcc66', 6);
     this.songName = formatSongPath(song.song || this.opts.song);
     this.cond.setBPM(song.bpm);
     this.cond.mapBPMChanges(song as any);
@@ -195,7 +202,7 @@ export class PlayState implements State {
     this.sectionStartSteps = song.notes.map(s => { const a = acc; acc += Math.round((s.sectionBeats ?? 4) * 4); return a; });
 
     // stage
-    this.stageName = stageForSong(song);
+    this.stageName = this.opts.stage || stageForSong(song);
     this.stage = (await loadStageFile(assets, this.stageName)) ?? defaultStage();
     assets.currentLevel = this.stage.directory ? this.stage.directory.toLowerCase() : null;
     this.isPixelStage = !!this.stage.isPixelStage || this.stage.stageUI === 'pixel';
@@ -287,6 +294,7 @@ export class PlayState implements State {
     this.boyfriend = new Character(this.BF_X, this.BF_Y, song.player1, true, assets);
     this.startCharPos(this.boyfriend);
     this.layerChars.push(this.boyfriend);
+    applyStageLayout(this);
     if (this.dad.curCharacter.startsWith("gf") && this.gf) { this.dad.x = this.gf.x; this.dad.y = this.gf.y; this.gf.visible = false; }
 
     if (this.gf && gfName === 'pico-speaker') {

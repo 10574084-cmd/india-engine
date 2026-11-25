@@ -9,6 +9,7 @@ import { modSave } from '../engine/save';
 import { Character, preloadCharacter } from '../game/character';
 import { Note, StrumNote, SING_ANIMS } from '../game/note';
 import { VideoSprite, resolveVideo } from '../game/video';
+import { HxScript, hxPrefetchKeys } from '../hx/runtime';
 
 let factory: LuaFactory | null = null;
 const getFactory = () => (factory ??= new LuaFactory(glueWasm));
@@ -40,6 +41,7 @@ export class LuaScript {
   lua!: LuaEngine;
   closed = false;
   warned = new Set<string>();
+  hx: HxScript | null = null;
   constructor(public host: ScriptHost, public path: string, public name: string, public modFolder: string) {}
 
   async init(source: string) {
@@ -65,12 +67,14 @@ export class LuaScript {
 
 export class ScriptHost {
   scripts: LuaScript[] = [];
+  hxScripts: HxScript[] = [];
+  apiFns = new Map<string, (...a: any[]) => any>();
   stageHandledByScript = false;
   vars = new Map<string, any>();
   shaderParams = new Map<string, any>();
   sounds = new Map<string, Track>();
   private errorsShown = new Set<string>();
-  private pendingLoads: Promise<any>[] = [];
+  pendingLoads: Promise<any>[] = [];
 
   constructor(public ps: PlayState) {}
 
@@ -91,34 +95,36 @@ export class ScriptHost {
     } catch { /* sin almacenamiento */ }
     const seen = new Set<string>();
     const queue: { path: string; mod: string }[] = [];
+    const hxQueue: { path: string; mod: string }[] = [];
     const modOf = (p: string) => /^mods\/([^/]+)\//i.exec(p)?.[1] ?? '';
     const addDir = (dir: string) => {
       for (const c of a.candidates(dir)) {
-        for (const f of a.vfs.listFiles(c, '.lua')) {
+        for (const ext of ['.lua', '.hx']) for (const f of a.vfs.listFiles(c, ext)) {
           const full = `${c}/${f}`;
           const k = full.toLowerCase();
-          if (!seen.has(k)) { seen.add(k); queue.push({ path: a.vfs.realPath(full)!, mod: modOf(full) }); }
+          if (!seen.has(k)) { seen.add(k); (ext === '.hx' ? hxQueue : queue).push({ path: a.vfs.realPath(full)!, mod: modOf(full) }); }
         }
       }
     };
     const addFile = (file: string) => {
       for (const c of a.candidates(file)) if (a.vfs.has(c)) {
         const k = c.toLowerCase();
-        if (!seen.has(k)) { seen.add(k); queue.push({ path: a.vfs.realPath(c)!, mod: modOf(c) }); }
+        if (!seen.has(k)) { seen.add(k); (file.endsWith('.hx') ? hxQueue : queue).push({ path: a.vfs.realPath(c)!, mod: modOf(c) }); }
       }
     };
     // 1. scripts globales   2. scripts de la canción   3. stage   4. eventos/notetypes del chart
     addDir('scripts');
     addDir(`data/${ps.songName}`);
     const stageFile = `stages/${ps.stageName}.lua`;
-    const before = queue.length;
+    const before = queue.length + hxQueue.length;
     addFile(stageFile);
-    if (queue.length > before) this.stageHandledByScript = true;
+    addFile(`stages/${ps.stageName}.hx`);
+    if (queue.length + hxQueue.length > before) this.stageHandledByScript = true;
     const evs = new Set(ps.eventNotes.map(x => x.event));
-    for (const ev of evs) addFile(`custom_events/${ev}.lua`);
+    for (const ev of evs) { addFile(`custom_events/${ev}.lua`); addFile(`custom_events/${ev}.hx`); }
     const types = new Set<string>();
     ps.song.notes.forEach(s => s.sectionNotes.forEach(n => { if (typeof n[3] === 'string' && n[3]) types.add(n[3]); }));
-    for (const t of types) addFile(`custom_notetypes/${t}.lua`);
+    for (const t of types) { addFile(`custom_notetypes/${t}.lua`); addFile(`custom_notetypes/${t}.hx`); }
 
     for (const q of queue) {
       let src: string;
@@ -128,11 +134,27 @@ export class ScriptHost {
       this.scripts.push(s);
       await s.init(src);
     }
+    for (const q of hxQueue) {
+      let src: string;
+      try { src = await a.vfs.text(q.path); } catch { continue; }
+      await this.prefetchHx(src);
+      const h = new HxScript(this, q.path, q.path.split('/').pop()!, q.mod);
+      this.hxScripts.push(h);
+      h.init(src);
+    }
     // cargas asíncronas que dispararon los scripts durante onCreate
     await Promise.all(this.pendingLoads); this.pendingLoads = [];
     // onCreate (después de que todos los scripts estén cargados, igual que Psych)
     this.call('onCreate');
     await Promise.all(this.pendingLoads); this.pendingLoads = [];
+  }
+
+  async prefetchHx(src: string) {
+    const a = this.e.assets; const { images, sounds } = hxPrefetchKeys(src);
+    await Promise.all([
+      ...[...images].map(async k => { await a.image(k); if (a.hasAtlasData(k)) await a.atlas(k); }),
+      ...[...sounds].map(k => a.sound(k)),
+    ]);
   }
 
   /** Busca nombres de imágenes/sonidos literales en el script para tenerlos en caché antes de ejecutarlo. */
@@ -146,7 +168,9 @@ export class ScriptHost {
       /precacheImage\s*\(\s*(['"])([^'"]+)\1()/g,
     ];
     for (const r of re) { let m; while ((m = r.exec(src))) keys.add(m[3] || m[2]); }
-    const snds = new Set<string>();
+    const hxk = hxPrefetchKeys(src);   // bloques runHaxeCode dentro del Lua
+    for (const k of hxk.images) keys.add(k);
+    const snds = new Set<string>(hxk.sounds);
     const rs = /(?:playSound|precacheSound)\s*\(\s*(['"])([^'"]+)\1/g; let m2;
     while ((m2 = rs.exec(src))) snds.add(m2[2]);
     await Promise.all([
@@ -157,12 +181,13 @@ export class ScriptHost {
 
   destroy() {
     for (const s of this.scripts) { try { s.call('onDestroy'); } catch { /* */ } s.close(); }
-    this.scripts = [];
+    for (const h of this.hxScripts) { try { h.call('onDestroy'); } catch { /* */ } h.close(); }
+    this.scripts = []; this.hxScripts = [];
     for (const t of this.sounds.values()) t.destroy();
     this.sounds.clear();
   }
 
-  error(s: LuaScript, where: string, e: any) {
+  error(s: { name: string }, where: string, e: any) {
     const msg = `${s.name}: ${where}: ${(e && e.message) ? String(e.message).split('\n')[0] : e}`;
     console.error('[Lua]', msg, e);
     const k = msg.slice(0, 120);
@@ -171,10 +196,10 @@ export class ScriptHost {
 
   // ------------------------------------------------------------------ llamadas
   call(name: string, args: any[] = []): any {
-    if (!this.scripts.length) return undefined;
+    if (!this.scripts.length && !this.hxScripts.length) return undefined;
     this.syncGlobals();
     let result: any;
-    for (const s of [...this.scripts]) {
+    for (const s of [...this.scripts, ...this.hxScripts] as { closed: boolean; call(n: string, a: any[]): any }[]) {
       if (s.closed) continue;
       const r = s.call(name, args);
       if (r === FUNCTION_STOP) result = FUNCTION_STOP;
@@ -187,7 +212,7 @@ export class ScriptHost {
 
   eventEarlyTrigger(ev: EventNote): number {
     let best = 0;
-    for (const s of this.scripts) {
+    for (const s of [...this.scripts, ...this.hxScripts] as { call(n: string, a: any[]): any }[]) {
       const r = s.call('eventEarlyTrigger', [ev.event, ev.value1, ev.value2, ev.strumTime]);
       if (typeof r === 'number' && r > best) best = r;
     }
@@ -421,9 +446,13 @@ export class ScriptHost {
   registerApi(script: LuaScript) {
     const ps = this.ps, host = this, e = this.e;
     const g = script.lua.global;
-    const def = (name: string, fn: (...a: any[]) => any) => g.set(name, (...a: any[]) => {
-      try { return fn(...a); } catch (err) { host.error(script, name, err); return undefined; }
-    });
+    const def = (name: string, fn: (...a: any[]) => any) => {
+      const wrapped = (...a: any[]) => {
+        try { return fn(...a); } catch (err) { host.error(script, name, err); return undefined; }
+      };
+      if (!host.apiFns.has(name)) host.apiFns.set(name, wrapped);
+      g.set(name, wrapped);
+    };
     const rate = () => ps.playbackRate;
     const unsupported = (name: string, ret: any = false) => def(name, () => {
       const k = name; if (!script.warned.has(k)) { script.warned.add(k); console.warn(`[Lua] ${name} no está soportado todavía en India Engine`); }
@@ -458,8 +487,14 @@ export class ScriptHost {
     def('removeLuaScript', (f: string) => { for (const s of host.scripts) if (s.path.toLowerCase().includes(String(f).toLowerCase())) s.close(); });
     def('callOnLuas', (fn: string, args: any[] = []) => { host.call(fn, Array.isArray(args) ? args : Object.values(args ?? {})); });
     def('setOnLuas', (k: string, v: any) => { for (const s of host.scripts) if (!s.closed) s.lua.global.set(k, v); });
-    def('runHaxeCode', () => { host.unsupportedOnce(script, 'runHaxeCode (HScript)'); return null; });
-    def('runHaxeFunction', () => null); def('addHaxeLibrary', () => null);
+    const hxOf = () => { if (!script.hx) script.hx = new HxScript(host, script.path, script.name, script.modFolder); return script.hx; };
+    def('runHaxeCode', (code: string, _vars?: any) => {
+      const h = hxOf();
+      try { const r = h.exec(String(code)); return r === null ? undefined : r; }
+      catch (err) { host.error(script, 'runHaxeCode', err); return null; }
+    });
+    def('runHaxeFunction', (fn: string, args?: any) => { const h = hxOf(); const a = Array.isArray(args) ? args : args && typeof args === 'object' ? Object.values(args) : []; try { const r = h.rt.interp.call(String(fn), a); return r === null ? undefined : r; } catch (err) { host.error(script, 'runHaxeFunction', err); return null; } });
+    def('addHaxeLibrary', () => null);
     def('addHScript', () => false); def('removeHScript', () => false);
     def('callScript', (f: string, fn: string, args: any[] = []) => {
       const s = host.scripts.find(x => x.path.toLowerCase().endsWith(String(f).toLowerCase() + '.lua') || x.path.toLowerCase().endsWith(String(f).toLowerCase()));

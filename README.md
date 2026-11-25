@@ -54,3 +54,12 @@ Además de la API de Psych 0.7.3, India Engine soporta:
 - **Ratón**: `mouseClicked`, `mousePressed`, `mouseReleased`, `getMouseX/Y`, `setMouseVisible` y `FlxG.mouse.*`.
 - **Reflexión**: `callMethod`, `callMethodFromClass`, `createInstance`, `addInstance`, `instanceArg`.
 - Logros (`unlockAchievement`…), `saveFile` / `deleteFile`, `FlxColor`.
+
+## Stages y HScript
+Formas de cargar un stage (se buscan en el mod actual, mods globales y assets):
+1. `stages/<nombre>.json` de Psych, incluida la lista `objects` de Psych 1.0 (sprites, animados, cuadrados y marcadores `gf`/`dad`/`boyfriend` para ordenar capas).
+2. `stages/<nombre>.lua` (Lua).
+3. `stages/<nombre>.hx` (HScript).
+4. Los stages vanilla (spooky, philly, limo, mall, school, tank…) están portados en TypeScript.
+
+HScript (`.hx` en `scripts/`, `stages/`, `custom_events/`, `custom_notetypes/`, y `runHaxeCode` desde Lua) corre con un intérprete propio de Haxe: variables, funciones, clases de Flixel más usadas (`FlxSprite`, `FlxText`, `FlxTween`, `FlxTimer`, `FlxG`, `FlxColor`, `BGSprite`, grupos…), `Paths`, `Std`, `Math`, `Reflect`, `Json`, `ClientPrefs`, etc. Todas las funciones de la API de Lua también están disponibles. Aún no soporta `class`/`typedef`/`enum` dentro de scripts ni shaders.
