@@ -15,6 +15,8 @@ import { Bar, HealthIcon, loadIconAtlas } from './hud';
 import { StageFile, defaultStage, loadStageFile, buildNativeStage } from './stage';
 import { ScriptHost } from '../lua/host';
 import { StageImpl, createStageImpl } from './stages';
+import { VideoSprite, resolveVideo } from './video';
+import { DialogueBox, DialogueFile } from './dialogue';
 
 const LOAD_TIPS = [
   'Consejo: pulsa Escape para pausar.',
@@ -145,6 +147,12 @@ export class PlayState implements State {
 
   scripts!: ScriptHost;
   stageImpl: StageImpl | null = null;
+  // --- cutscenes y substates
+  cutsceneVideo: VideoSprite | null = null;
+  dialogueBox: DialogueBox | null = null;
+  endRequested = false;
+  sub: { name: string; pause: boolean; items: Drawable[]; t: number } | null = null;
+  subPausedAudio = false;
   asyncInit = true;
   loadLabel = 'Preparando…'; loadFrac = 0; loadShown = 0; loadAlpha = 1; loadT = 0;
   loadTip = LOAD_TIPS[Math.floor(Math.random() * LOAD_TIPS.length)];
@@ -532,8 +540,11 @@ export class PlayState implements State {
     if (this.mode === 'load') return;
     if (this.mode === 'pause') { this.updatePause(); return; }
     if (this.mode === 'dead') { this.updateDead(dt); return; }
+    this.updateCutscene(dt);
+    if (this.sub && this.sub.pause) { this.updateSubPaused(dt); return; }
 
     this.scripts.call('onUpdate', [dt]);
+    if (this.sub) this.updateSubItems(dt);
 
     if (this.startedCountdown && !this.paused) {
       this.updateSongPosition();
@@ -585,7 +596,7 @@ export class PlayState implements State {
       if (r !== FUNCTION_STOP) { void this.startGameOver(); return; }
     }
 
-    if ((inp.justPressed('pause') || inp.justPressedRaw('Escape')) && this.startedCountdown && !this.endingSong) this.pauseGame();
+    if ((inp.justPressed('pause') || inp.justPressedRaw('Escape')) && this.startedCountdown && !this.endingSong && !this.sub && !this.inCutscene) this.pauseGame();
     if (inp.justPressed('reset') && !this.endingSong && this.startedCountdown) this.health = 0;
     this.scripts.call('onUpdatePost', [dt]);
   }
@@ -1252,8 +1263,10 @@ export class PlayState implements State {
 
   endSong() {
     if (this.endingSong) return;
+    this.endRequested = true;
     const r = this.scripts.call('onEndSong');
     if (r === FUNCTION_STOP) return;
+    this.endRequested = false;
     this.endingSong = true;
     this.inst?.stop(); this.vocals?.stop(); this.opponentVocals?.stop();
     if (!this.cpuControlled && !this.practiceMode) {
@@ -1261,6 +1274,99 @@ export class PlayState implements State {
     }
     this.endTimer = 1.0;
   }
+  // ====================================================================== cutscenes: video y diálogo
+  /** Al terminar un video o diálogo: seguir con la canción o con su final. */
+  startAndEnd() {
+    this.inCutscene = false;
+    if (this.endRequested || this.endingSong) { this.endingSong = false; this.endSong(); }
+    else this.startCountdown();
+  }
+
+  startVideo(name: string, canSkip = true): boolean {
+    const path = resolveVideo(this.e, name);
+    if (!path) { this.e.toast('Video no encontrado: ' + name, '#ffcc66', 4); this.startAndEnd(); return false; }
+    this.inCutscene = true;
+    const v = new VideoSprite(this.e, path, false);
+    v.fullscreen = true; v.camera = 'other';
+    this.cutsceneVideo = v; (v as any).canSkip = canSkip;
+    this.layerOther.push(v);
+    v.onEnd = () => {
+      this.removeDrawable(v); v.destroy();
+      if (this.cutsceneVideo === v) this.cutsceneVideo = null;
+      this.scripts.call('onVideoCompleted', ['']);
+      this.startAndEnd();
+    };
+    return true;
+  }
+
+  async startDialogue(file: string, music?: string): Promise<boolean> {
+    const path = this.e.assets.resolve(file.endsWith('.json') ? file : file + '.json')
+      ?? this.e.assets.resolve(`data/${this.songName}/${file}.json`) ?? this.e.assets.resolve(`data/${this.songName}/dialogue.json`);
+    let list: DialogueFile | null = null;
+    if (path) { try { list = await this.e.assets.vfs.json<DialogueFile>(path); } catch { list = null; } }
+    if (!list || !Array.isArray(list.dialogue) || !list.dialogue.length) {
+      this.e.toast('Diálogo no válido o no encontrado: ' + file, '#ffcc66', 4); this.startAndEnd(); return false;
+    }
+    this.inCutscene = true;
+    const box = await DialogueBox.create(this.e, list, music);
+    box.nextDialogueThing = n => this.scripts.call('onNextDialogue', [n]);
+    box.skipDialogueThing = n => this.scripts.call('onSkipDialogue', [n]);
+    box.finishThing = () => { this.removeDrawable(box); if (this.dialogueBox === box) this.dialogueBox = null; this.startAndEnd(); };
+    this.dialogueBox = box; this.layerOther.push(box);
+    return true;
+  }
+
+  private updateCutscene(_dt: number) {
+    const v = this.cutsceneVideo, inp = this.e.input;
+    if (v && (v as any).canSkip && (inp.justPressed('accept') || inp.justPressedRaw('Escape') || inp.justPressedRaw('Space'))) v.finish();
+  }
+
+  // ====================================================================== substates personalizados (Lua)
+  openSub(name: string, pause = false) {
+    if (this.sub) return false;
+    this.sub = { name, pause, items: [], t: 0 };
+    if (pause) {
+      this.subPausedAudio = this.startedCountdown && !this.startingSong;
+      this.pausedPos = this.cond.songPosition;
+      this.inst?.stop(); this.vocals?.stop(); this.opponentVocals?.stop();
+      this.paused = true;
+    }
+    this.scripts.call('onCustomSubstateCreate', [name]);
+    this.scripts.call('onCustomSubstateCreatePost', [name]);
+    return true;
+  }
+  closeSub() {
+    const sub = this.sub; if (!sub) return false;
+    this.scripts.call('onCustomSubstateDestroy', [sub.name]);
+    this.sub = null;
+    for (const o of sub.items) { for (const [k, v] of this.luaSprites) if (v === o) this.luaSprites.delete(k); for (const [k, v] of this.luaTexts) if (v === o) this.luaTexts.delete(k); }
+    if (sub.pause) {
+      this.paused = false;
+      const now = this.e.audio.ctx.currentTime;
+      this.audioAnchor = now - this.pausedPos / 1000 / this.playbackRate;
+      if (this.subPausedAudio) this.scheduleAudio(Math.max(0, this.pausedPos));
+    }
+    return true;
+  }
+  insertToSub(o: Drawable, pos = -1) {
+    if (!this.sub) return false;
+    this.removeDrawable(o);
+    if (pos < 0 || pos > this.sub.items.length) this.sub.items.push(o); else this.sub.items.splice(pos, 0, o);
+    return true;
+  }
+  private updateSubItems(dt: number) {
+    const sub = this.sub!; sub.t += dt;
+    this.scripts.call('onCustomSubstateUpdate', [sub.name, dt]);
+    for (const o of [...sub.items]) o.update(dt);
+    this.scripts.call('onCustomSubstateUpdatePost', [sub.name, dt]);
+  }
+  private updateSubPaused(dt: number) {
+    this.updateSubItems(dt);
+    for (const o of [...this.layerOther]) o.update(dt);
+    for (const c of Object.values(this.cams)) c.update(dt);
+    this.tweens.update(dt);
+  }
+
   scoreId() { return `${this.opts.mod}|${this.songName}|${this.opts.diffName}`; }
 
   private finishExit(finished: boolean) {
@@ -1281,7 +1387,7 @@ export class PlayState implements State {
       if (this.fade > 0.01) { ctx.fillStyle = `rgba(0,0,0,${this.fade})`; ctx.fillRect(0, 0, W, H); }
       return;
     }
-    const order: Drawable[][] = [this.layerBack, this.layerChars, this.layerFront, this.layerHud, this.layerOther];
+    const order: Drawable[][] = [this.layerBack, this.layerChars, this.layerFront, this.layerHud, this.layerOther, this.sub?.items ?? []];
     for (const cam of [this.cams.game, this.cams.hud, this.cams.other]) {
       cam.begin(ctx);
       for (const layer of order) {
