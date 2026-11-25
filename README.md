@@ -63,3 +63,7 @@ Formas de cargar un stage (se buscan en el mod actual, mods globales y assets):
 4. Los stages vanilla (spooky, philly, limo, mall, school, tank…) están portados en TypeScript.
 
 HScript (`.hx` en `scripts/`, `stages/`, `custom_events/`, `custom_notetypes/`, y `runHaxeCode` desde Lua) corre con un intérprete propio de Haxe: variables, funciones, clases de Flixel más usadas (`FlxSprite`, `FlxText`, `FlxTween`, `FlxTimer`, `FlxG`, `FlxColor`, `BGSprite`, grupos…), `Paths`, `Std`, `Math`, `Reflect`, `Json`, `ClientPrefs`, etc. Todas las funciones de la API de Lua también están disponibles. Aún no soporta `class`/`typedef`/`enum` dentro de scripts ni shaders.
+
+## Pack de scripts Lua incluidos
+En **Options** hay una sección de scripts que se activan/desactivan: Game Over+, Pulso de fondo, Lluvia, Nieve, Viñeta, Cámara con vaivén, Iconos con rebote, Drenar vida, Mostrar ms y Flash al fallar. Están en `src/builtin/scripts.ts` y sirven de ejemplo.
+Nuevo para mods: `GameOverSubstate.characterName/deathSoundName/loopSoundName/endSoundName` (con `setPropertyFromClass`), callbacks `onGameOverConfirm`, `onEventPushed`, `goodNoteHitPre`, `opponentNoteHitPre`, `onKeyPressPre`, `onKeyReleasePre`, `onRecalculateRating`, y funciones `setScoreText`, `callOnScripts`. Los sprites en la cámara `other` se dibujan también en la pantalla de Game Over.

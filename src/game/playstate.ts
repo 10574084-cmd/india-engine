@@ -278,6 +278,7 @@ export class PlayState implements State {
       for (const ev of this.eventNotes) await this.stageImpl.eventPushed(ev);
     } else await buildNativeStage(this);
     this.scripts.call('onLoadStage');
+    for (const ev of this.eventNotes) this.scripts.call('onEventPushed', [ev.event, ev.value1, ev.value2, ev.strumTime]);
 
     // personajes
     this.gf = null;
@@ -944,6 +945,7 @@ export class PlayState implements State {
       else {
         const s = this.playerStrums[d];
         s.playStrumAnim('static'); s.resetAnim = 0;
+        this.scripts.call('onKeyReleasePre', [d]);
         this.scripts.call('onKeyRelease', [d]);
       }
     }
@@ -951,6 +953,7 @@ export class PlayState implements State {
 
   private keyPressed(key: number, pos: number) {
     if (this.paused || this.endingSong || !this.generatedMusic) return;
+    this.scripts.call('onKeyPressPre', [key]);
     this.scripts.call('onKeyPress', [key]);
     const safe = this.cond.safeZoneOffset;
     const possible = this.notes.filter(n => n.mustPress && !n.wasGoodHit && !n.tooLate && !n.blockHit && n.noteData === key
@@ -988,6 +991,7 @@ export class PlayState implements State {
     if (n.wasGoodHit) return;
     n.wasGoodHit = true;
     const idx = this.notes.indexOf(n);
+    this.scripts.call('goodNoteHitPre', [idx, n.noteData, n.noteType, n.isSustainNote]);
     if (this.hitsoundBuf && this.prefs.hitsoundVolume > 0) this.e.audio.playSound(this.hitsoundBuf, this.prefs.hitsoundVolume);
 
     if (n.hitCausesMiss) {
@@ -1028,6 +1032,7 @@ export class PlayState implements State {
   opponentNoteHit(n: Note) {
     n.hitByOpponent = true;
     const idx = this.notes.indexOf(n);
+    this.scripts.call('opponentNoteHitPre', [idx, n.noteData, n.noteType, n.isSustainNote]);
     const char = n.gfNote ? this.gf : this.dad;
     if (n.noteType !== 'Hey!' && !n.noAnimation && char) {
       char.playAnim(SING_ANIMS[n.noteData] + n.animSuffix, true); char.holdTimer = 0;
@@ -1088,6 +1093,7 @@ export class PlayState implements State {
     if (goods > 0) this.ratingFC = 'GFC';
     if (bads > 0 || shits > 0) this.ratingFC = 'FC';
     if (this.songMisses > 0) this.ratingFC = this.songMisses < 10 ? 'SDCB' : 'Clear';
+    this.scripts.call('onRecalculateRating', [badHit]);
     this.updateScoreText(badHit);
   }
 
@@ -1256,12 +1262,15 @@ export class PlayState implements State {
     }
     if (this.deadState !== 'confirm' && inp.justPressed('accept')) {
       this.deadState = 'confirm'; c?.playAnim('deathConfirm', true);
+      this.scripts.call('onGameOverConfirm', [true]);
       this.deadTrack?.stop();
       void this.e.assets.music(this.song.gameOverEnd || this.gameOverDefs.end).then(b => { this.deadTrack = this.e.audio.track(b); this.deadTrack.play(0); });
       this.fadeTarget = 1; this.endTimer = -1; setTimeout(() => { if (this.opts.onRestart) this.opts.onRestart(); }, 2200);
     }
-    if (this.deadState !== 'confirm' && inp.justPressed('back')) { this.deadTrack?.stop(); this.finishExit(false); }
+    if (this.deadState !== 'confirm' && inp.justPressed('back')) { this.scripts.call('onGameOverConfirm', [false]); this.deadTrack?.stop(); this.finishExit(false); }
     this.fade += (this.fadeTarget - this.fade) * Math.min(1, dt * 1.5);
+    this.cams.other.update(dt);
+    for (const o of this.layerOther) o.update(dt);
     this.tweens.update(dt);
   }
   private async startDeadMusic() {
@@ -1392,6 +1401,9 @@ export class PlayState implements State {
       this.deadCam.begin(ctx);
       this.deadChar?.draw(ctx, this.deadCam);
       this.deadCam.end(ctx);
+      const oc = this.cams.other; oc.begin(ctx);
+      for (const l of [this.layerBack, this.layerFront, this.layerHud, this.layerOther]) for (const o of l) if (o.camera === 'other') o.draw(ctx, oc);
+      oc.end(ctx);
       if (this.fade > 0.01) { ctx.fillStyle = `rgba(0,0,0,${this.fade})`; ctx.fillRect(0, 0, W, H); }
       return;
     }
