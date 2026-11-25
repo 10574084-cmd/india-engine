@@ -45,6 +45,7 @@ export class Engine {
     this.prefs = loadPrefs();
     this.audio.master.gain.value = this.prefs.volume;
     this.input = new Input(this.prefs);
+    this.input.attachCanvas(canvas);
     this.assets = new Assets(this.vfs, this.audio);
     this.input.onRawKey = (code, down, ev) => { if (down) this.state?.keyDown?.(code, ev); };
     const resize = () => {

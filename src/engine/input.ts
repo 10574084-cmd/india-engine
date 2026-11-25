@@ -7,6 +7,22 @@ export class Input {
   private releasedFrame = new Set<string>();
   /** cola de pulsaciones con marca de tiempo, para juzgar notas en el momento exacto de la pulsación */
   queue: { code: string; time: number; down: boolean }[] = [];
+  /** ratón en coordenadas virtuales (1280x720) */
+  mouseX = 0; mouseY = 0; mouseVisible = false;
+  private mDown = new Set<number>(); private mPressed = new Set<number>(); private mReleased = new Set<number>();
+  private canvas?: HTMLCanvasElement;
+  attachCanvas(c: HTMLCanvasElement) {
+    this.canvas = c;
+    const pos = (ev: MouseEvent) => { const r = c.getBoundingClientRect(); this.mouseX = (ev.clientX - r.left) / r.width * 1280; this.mouseY = (ev.clientY - r.top) / r.height * 720; };
+    window.addEventListener('mousemove', pos);
+    c.addEventListener('mousedown', ev => { pos(ev); this.mDown.add(ev.button); this.mPressed.add(ev.button); });
+    window.addEventListener('mouseup', ev => { this.mDown.delete(ev.button); this.mReleased.add(ev.button); });
+    c.style.cursor = 'none';
+  }
+  setMouseVisible(v: boolean) { this.mouseVisible = v; if (this.canvas) this.canvas.style.cursor = v ? 'default' : 'none'; }
+  mouseJustPressed(b = 0) { return this.mPressed.has(b); }
+  mousePressed(b = 0) { return this.mDown.has(b); }
+  mouseJustReleased(b = 0) { return this.mReleased.has(b); }
   onRawKey?: (code: string, down: boolean, ev: KeyboardEvent) => void;
   constructor(public prefs: Prefs) {
     window.addEventListener('keydown', e => {
@@ -33,5 +49,5 @@ export class Input {
   justReleased(action: string) { return this.codes(action).some(c => this.releasedFrame.has(c)); }
   rawDown(code: string) { return this.down.has(code); }
   justPressedRaw(code: string) { return this.pressedFrame.has(code); }
-  endFrame() { this.pressedFrame.clear(); this.releasedFrame.clear(); this.queue.length = 0; }
+  endFrame() { this.mPressed.clear(); this.mReleased.clear(); this.pressedFrame.clear(); this.releasedFrame.clear(); this.queue.length = 0; }
 }

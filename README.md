@@ -45,3 +45,12 @@ la ventana también funciona. Los assets del juego base **no están en este repo
 - Un mod muy scripteado puede fallar en funciones concretas: los errores de Lua salen en pantalla y en la consola.
 
 Mira `NOTICE.md` para los créditos y licencias.
+
+## Lua: extras de India Engine
+Además de la API de Psych 0.7.3, India Engine soporta:
+- **Video**: `startVideo(archivo, puedeSaltar)` y `makeVideoSprite(tag, archivo, x, y, cam, loop)` (mp4/webm en `videos/`), con el callback `onVideoCompleted(tag)`.
+- **Diálogo**: `startDialogue(archivo, musica)` con cuadro, retratos y los callbacks `onNextDialogue` / `onSkipDialogue`.
+- **Substates de Lua (GUI)**: `openCustomSubstate`, `closeCustomSubstate`, `insertToCustomSubstate` y los callbacks `onCustomSubstateCreate/Update/Destroy`.
+- **Ratón**: `mouseClicked`, `mousePressed`, `mouseReleased`, `getMouseX/Y`, `setMouseVisible` y `FlxG.mouse.*`.
+- **Reflexión**: `callMethod`, `callMethodFromClass`, `createInstance`, `addInstance`, `instanceArg`.
+- Logros (`unlockAchievement`…), `saveFile` / `deleteFile`, `FlxColor`.

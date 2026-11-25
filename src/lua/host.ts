@@ -8,6 +8,7 @@ import { ENGINE_NAME, ENGINE_VERSION, PSYCH_COMPAT_VERSION } from '../engine/eng
 import { modSave } from '../engine/save';
 import { Character, preloadCharacter } from '../game/character';
 import { Note, StrumNote, SING_ANIMS } from '../game/note';
+import { VideoSprite, resolveVideo } from '../game/video';
 
 let factory: LuaFactory | null = null;
 const getFactory = () => (factory ??= new LuaFactory(glueWasm));
@@ -66,6 +67,7 @@ export class ScriptHost {
   scripts: LuaScript[] = [];
   stageHandledByScript = false;
   vars = new Map<string, any>();
+  shaderParams = new Map<string, any>();
   sounds = new Map<string, Track>();
   private errorsShown = new Set<string>();
   private pendingLoads: Promise<any>[] = [];
@@ -77,6 +79,16 @@ export class ScriptHost {
   // ------------------------------------------------------------------ carga
   async loadAll() {
     const ps = this.ps, a = ps.e.assets;
+    // archivos guardados con saveFile() en sesiones anteriores
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i); if (!k || !k.startsWith('india.file.')) continue;
+        const [mod, ...rest] = k.slice('india.file.'.length).split('|'); const f = rest.join('|');
+        if (mod !== a.currentMod) continue;
+        const data = new TextEncoder().encode(localStorage.getItem(k) ?? '').buffer as ArrayBuffer;
+        ps.e.vfs.add(mod ? `mods/${mod}/${f}` : `mods/${f}`, async () => data);
+      }
+    } catch { /* sin almacenamiento */ }
     const seen = new Set<string>();
     const queue: { path: string; mod: string }[] = [];
     const modOf = (p: string) => /^mods\/([^/]+)\//i.exec(p)?.[1] ?? '';
@@ -321,7 +333,14 @@ export class ScriptHost {
     const ps = this.ps;
     const c = cls.split('.').pop()!;
     switch (c) {
-      case 'FlxG': return { width: W, height: H, elapsed: 1 / 60, sound: { music: this.musicProxy() }, save: { data: {} } };
+      case 'FlxG': {
+        const inp = this.e.input;
+        return { width: W, height: H, elapsed: 1 / 60, sound: { music: this.musicProxy() }, save: { data: {} },
+          mouse: { get x() { return inp.mouseX; }, get y() { return inp.mouseY; }, get screenX() { return inp.mouseX; }, get screenY() { return inp.mouseY; },
+            get visible() { return inp.mouseVisible; }, set visible(v: boolean) { inp.setMouseVisible(!!v); },
+            get justPressed() { return inp.mouseJustPressed(0); }, get pressed() { return inp.mousePressed(0); }, get justReleased() { return inp.mouseJustReleased(0); },
+            get justPressedRight() { return inp.mouseJustPressed(2); }, get pressedRight() { return inp.mousePressed(2); } } };
+      }
       case 'ClientPrefs': return { data: ps.prefs };
       case 'PlayState': return { ...this.psProxy(), instance: ps, SONG: ps.song, curStage: ps.stageName, isStoryMode: !!ps.opts.isStory, storyDifficulty: 1 };
       case 'Conductor': return ps.cond;
@@ -745,8 +764,27 @@ export class ScriptHost {
     def('endSong', () => { ps.endSong(); return true; });
     def('restartSong', () => { ps.opts.onRestart?.(); return true; });
     def('exitSong', () => { ps.opts.onExit({ finished: false, score: ps.songScore }); return true; });
-    def('startDialogue', () => { host.unsupportedOnce(script, 'startDialogue'); ps.startCountdown(); return false; });
-    def('startVideo', () => { host.unsupportedOnce(script, 'startVideo (el video se omite)'); if (ps.endingSong) ps.endSong(); else ps.startCountdown(); return false; });
+    def('startDialogue', (file: string, music?: string) => { void ps.startDialogue(String(file), music ? String(music) : undefined); return true; });
+    def('startVideo', (file: string, canSkip = true) => {
+      if (!resolveVideo(e, String(file))) { console.warn('[Lua] startVideo: no existe el video', file); e.toast('startVideo: video no encontrado: ' + file, '#ff9999', 4); return false; }
+      return ps.startVideo(String(file), canSkip !== false);
+    });
+    // video como sprite (API de Psych 1.0)
+    def('makeVideoSprite', (tag: string, file: string, x = 0, y = 0, cam = 'camGame', loop = false) => {
+      const path = resolveVideo(e, String(file));
+      if (!path) { e.toast('makeVideoSprite: video no encontrado: ' + file, '#ff9999', 4); return false; }
+      const old = ps.luaSprites.get(tag); if (old) { ps.removeDrawable(old); if (old instanceof VideoSprite) old.destroy(); }
+      const v = new VideoSprite(e, path, !!loop);
+      v.x = x; v.y = y; v.camera = host.camName(cam); v.scrollFactor.x = v.scrollFactor.y = 0;
+      v.onEnd = () => { host.call('onVideoCompleted', [tag]); };
+      ps.luaSprites.set(tag, v);
+      return true;
+    });
+    def('pauseVideoSprite', (tag: string) => { const v = ps.luaSprites.get(tag); if (v instanceof VideoSprite) v.pause(); });
+    def('resumeVideoSprite', (tag: string) => { const v = ps.luaSprites.get(tag); if (v instanceof VideoSprite) v.resume(); });
+    def('setVideoVolume', (tag: string, vol: number) => { const v = ps.luaSprites.get(tag); if (v instanceof VideoSprite) v.setVolume(vol); });
+    def('getVideoTime', (tag: string) => { const v = ps.luaSprites.get(tag); return v instanceof VideoSprite ? v.time : 0; });
+    def('getVideoDuration', (tag: string) => { const v = ps.luaSprites.get(tag); return v instanceof VideoSprite ? v.duration : 0; });
     def('loadSong', () => false);
 
     // ---------------------------------------------------------- teclado y ratón
@@ -760,16 +798,101 @@ export class ScriptHost {
     def('keyboardJustPressed', (k: string) => input.justPressedRaw(raw(k)));
     def('keyboardPressed', (k: string) => input.rawDown(raw(k)));
     def('keyboardReleased', () => false);
-    for (const n of ['mouseClicked', 'mousePressed', 'mouseReleased', 'anyGamepadJustPressed', 'anyGamepadPressed', 'anyGamepadReleased', 'gamepadJustPressed', 'gamepadPressed', 'gamepadReleased']) def(n, () => false);
-    def('getMouseX', () => 0); def('getMouseY', () => 0); def('gamepadAnalogX', () => 0); def('gamepadAnalogY', () => 0);
+    const btn = (b: any) => { const k = String(b ?? 'left').toLowerCase(); return k === 'right' ? 2 : k === 'middle' ? 1 : 0; };
+    def('mouseClicked', (b?: string) => input.mouseJustPressed(btn(b)));
+    def('mousePressed', (b?: string) => input.mousePressed(btn(b)));
+    def('mouseReleased', (b?: string) => input.mouseJustReleased(btn(b)));
+    for (const n of ['anyGamepadJustPressed', 'anyGamepadPressed', 'anyGamepadReleased', 'gamepadJustPressed', 'gamepadPressed', 'gamepadReleased']) def(n, () => false);
+    def('getMouseX', (cam?: string) => { const c = cam ? ps.cams[host.camName(cam)] : null; return input.mouseX + (c ? 0 : 0); });
+    def('getMouseY', (cam?: string) => { const c = cam ? ps.cams[host.camName(cam)] : null; return input.mouseY + (c ? 0 : 0); });
+    def('setMouseVisible', (v: boolean) => input.setMouseVisible(!!v));
+    def('gamepadAnalogX', () => 0); def('gamepadAnalogY', () => 0);
 
-    // ---------------------------------------------------------- shaders / extras sin soporte
-    for (const n of ['initLuaShader', 'setSpriteShader', 'removeSpriteShader', 'setShaderSampler2D', 'setShaderFloat', 'setShaderFloatArray', 'setShaderInt', 'setShaderIntArray', 'setShaderBool', 'setShaderBoolArray'])
+    // ---------------------------------------------------------- shaders (parámetros guardados; el render WebGL llega más tarde)
+    const shaderTag = (o: any) => String(o);
+    for (const n of ['initLuaShader', 'setSpriteShader', 'setShaderSampler2D'])
       def(n, () => { host.unsupportedOnce(script, 'shaders (' + n + ')'); return false; });
-    for (const n of ['getShaderFloat', 'getShaderInt', 'getShaderBool']) def(n, () => null);
-    for (const n of ['makeFlxAnimateSprite', 'loadAnimateAtlas']) def(n, () => { host.unsupportedOnce(script, 'atlas Animate (' + n + ')'); });
-    unsupported('openCustomSubstate'); unsupported('closeCustomSubstate'); unsupported('insertToCustomSubstate');
-    for (const n of ['createInstance', 'addInstance', 'callMethod', 'callMethodFromClass', 'instanceArg']) def(n, () => { host.unsupportedOnce(script, 'reflexión Haxe (' + n + ')'); return null; });
+    def('removeSpriteShader', () => false);
+    for (const [kind, fix] of [['Float', Number], ['Int', (v: any) => Math.trunc(Number(v))], ['Bool', Boolean]] as [string, (v: any) => any][]) {
+      def('setShader' + kind, (sh: string, prop: string, v: any) => { host.shaderParams.set(shaderTag(sh) + '.' + prop, fix(v)); host.unsupportedOnce(script, 'shaders'); return true; });
+      def('getShader' + kind, (sh: string, prop: string) => host.shaderParams.get(shaderTag(sh) + '.' + prop) ?? null);
+      def('setShader' + kind + 'Array', (sh: string, prop: string, v: any) => { host.shaderParams.set(shaderTag(sh) + '.' + prop, Array.isArray(v) ? v.map(fix) : Object.values(v ?? {}).map(fix)); return true; });
+      def('getShader' + kind + 'Array', (sh: string, prop: string) => host.shaderParams.get(shaderTag(sh) + '.' + prop) ?? null);
+    }
+    for (const n of ['makeFlxAnimateSprite', 'loadAnimateAtlas', 'addAnimationBySymbol', 'addAnimationBySymbolIndices']) def(n, () => { host.unsupportedOnce(script, 'atlas Animate (' + n + ')'); });
+
+    // ---------------------------------------------------------- substates personalizados (GUI en Lua)
+    def('openCustomSubstate', (name: string, pause = false) => ps.openSub(String(name), !!pause));
+    def('closeCustomSubstate', () => ps.closeSub());
+    def('insertToCustomSubstate', (tag: string, pos = -1) => {
+      const o = ps.luaSprites.get(tag) ?? ps.luaTexts.get(tag); if (!o) return false;
+      return ps.insertToSub(o, pos);
+    });
+
+    // ---------------------------------------------------------- colores, globales y archivos
+    def('FlxColor', (c: any) => parseColor(c) | 0);
+    def('getGlobals', () => ({}));
+    const fileKey = (f: string) => 'india.file.' + e.assets.currentMod + '|' + String(f).replace(/\\/g, '/');
+    def('saveFile', (path: string, content: string, _abs = false) => {
+      try { localStorage.setItem(fileKey(path), String(content ?? '')); } catch { /* sin almacenamiento */ }
+      const data = new TextEncoder().encode(String(content ?? '')).buffer as ArrayBuffer;
+      e.vfs.add(e.assets.currentMod ? `mods/${e.assets.currentMod}/${path}` : `mods/${path}`, async () => data);
+      return true;
+    });
+    def('deleteFile', (path: string, _abs = false) => { try { localStorage.removeItem(fileKey(path)); } catch { /* nada */ } return true; });
+
+    // ---------------------------------------------------------- reflexión (callMethod / instancias)
+    const unwrap = (a: any): any => {
+      if (a && typeof a === 'object' && !Array.isArray(a) && a.__instance) return host.vars.get(a.__instance) ?? host.objectAt(a.__instance);
+      return a;
+    };
+    const argList = (a: any): any[] => (Array.isArray(a) ? a : a && typeof a === 'object' ? Object.values(a) : a == null ? [] : [a]).map(unwrap);
+    const callOn = (parent: any, key: string, args: any[]) => {
+      const fn = parent?.[key];
+      if (typeof fn !== 'function') { console.warn('[Lua] callMethod: no existe el método', key); return null; }
+      const r = fn.apply(parent, args);
+      return r === undefined ? null : (typeof r === 'object' ? null : r);
+    };
+    def('callMethod', (path: string, args?: any) => {
+      const r = host.resolve(String(path)); if (!r) return null;
+      return callOn(r.parent, String(r.key), argList(args));
+    });
+    def('callMethodFromClass', (cls: string, fn: string, args?: any) => {
+      const root = host.classRoot(String(cls)); if (!root) { host.unsupportedOnce(script, 'clase ' + cls); return null; }
+      const parts = String(fn).split('.'); let o = root;
+      for (const p of parts.slice(0, -1)) o = o?.[p];
+      return callOn(o, parts[parts.length - 1], argList(args));
+    });
+    def('instanceArg', (tag: string) => ({ __instance: String(tag) }));
+    def('createInstance', (tag: string, cls: string, args?: any) => {
+      const c = String(cls).split('.').pop(); const a = argList(args);
+      let o: any = null;
+      if (c === 'FlxSprite') o = new Sprite(Number(a[0] ?? 0), Number(a[1] ?? 0));
+      else if (c === 'FlxText') o = new TextObj(Number(a[0] ?? 0), Number(a[1] ?? 0), Number(a[2] ?? 0), String(a[3] ?? ''), Number(a[4] ?? 8) * 2);
+      if (!o) { host.unsupportedOnce(script, 'createInstance(' + cls + ')'); return false; }
+      o.camera = 'game'; host.vars.set(String(tag), o); return true;
+    });
+    def('addInstance', (tag: string, front = false) => {
+      const o = host.vars.get(String(tag)); if (!o || typeof o.draw !== 'function') return false;
+      ps.removeDrawable(o); (front ? ps.layerFront : ps.layerBack).push(o); return true;
+    });
+
+    // ---------------------------------------------------------- logros (guardados en el navegador)
+    const achKey = 'india.achievements';
+    const loadAch = (): Record<string, any> => { try { return JSON.parse(localStorage.getItem(achKey) ?? '{}'); } catch { return {}; } };
+    const saveAch = (o: Record<string, any>) => { try { localStorage.setItem(achKey, JSON.stringify(o)); } catch { /* nada */ } };
+    const BUILTIN_ACH = ['friday_night_play', 'week1_nomiss', 'week2_nomiss', 'week3_nomiss', 'week4_nomiss', 'week5_nomiss', 'week6_nomiss', 'week7_nomiss', 'ur_bad', 'ur_good', 'hype', 'two_keys', 'toastie', 'debugger'];
+    def('achievementExists', (n: string) => BUILTIN_ACH.includes(String(n)) || e.assets.exists(`achievements/${n}.json`));
+    def('isAchievementUnlocked', (n: string) => !!loadAch()[n]?.unlocked);
+    def('unlockAchievement', (n: string) => {
+      const all = loadAch(); if (all[n]?.unlocked) return false;
+      all[n] = { ...(all[n] ?? {}), unlocked: true }; saveAch(all);
+      e.toast('🏆 Logro desbloqueado: ' + n, '#ffd966', 5); return true;
+    });
+    def('getAchievementScore', (n: string) => loadAch()[n]?.score ?? 0);
+    def('setAchievementScore', (n: string, v: number, _save = true) => { const all = loadAch(); all[n] = { ...(all[n] ?? {}), score: Number(v) }; saveAch(all); return Number(v); });
+    def('addAchievementScore', (n: string, v = 1, _save = true) => { const all = loadAch(); const nv = (all[n]?.score ?? 0) + Number(v); all[n] = { ...(all[n] ?? {}), score: nv }; saveAch(all); return nv; });
+    def('changeDiscordPresence', () => {}); def('changeDiscordClientID', () => {});
     void SING_ANIMS; void Note;
   }
 
