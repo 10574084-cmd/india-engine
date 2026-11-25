@@ -1,10 +1,11 @@
 import { Engine } from './engine/engine';
-import { MenuState } from './menus/menus';
+import { MenuState, startSong } from './menus/menus';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const status = document.getElementById('status')!;
 const engine = new Engine(canvas);
 (window as any).india = engine;
+(engine as any).startSong = (song: string, diff = 'Hard', mod = '') => startSong(engine, song, diff, mod);
 
 async function boot() {
   // En desarrollo, si hay public/vfs-manifest.json (npm run extract) se monta solo.

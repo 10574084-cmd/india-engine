@@ -229,3 +229,15 @@ export class MenuState implements State {
 
   destroy() {}
 }
+
+/** Arranca una canción directamente (útil para pruebas y accesos directos). */
+export function startSong(e: Engine, song: string, diffName = 'Hard', mod = '') {
+  const start = () => {
+    void e.switchState(() => new PlayState(e, {
+      song, diffName, diffSuffix: diffSuffix(diffName), mod,
+      onExit: () => { void e.switchState(() => new MenuState(e, 'freeplay')); },
+      onRestart: () => start(),
+    }));
+  };
+  start();
+}

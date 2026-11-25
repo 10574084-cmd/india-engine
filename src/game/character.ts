@@ -43,6 +43,8 @@ export class Character extends Sprite {
   /** ¿se usa un personaje de reemplazo porque el pedido no existe? */
   isFallback = false;
   extraData = new Map<string, any>();
+  /** pico-speaker: notas [tiempo, dirección] y posición de canción */
+  animationNotes: number[][] = []; songPos = 0;
 
   constructor(x: number, y: number, name: string, isPlayer: boolean, private assets: Assets) {
     super(x, y);
@@ -77,6 +79,7 @@ export class Character extends Sprite {
     }
     this.hasMissAnimations = ['singLEFTmiss', 'singDOWNmiss', 'singUPmiss', 'singRIGHTmiss'].some(n => this.animOffsets.has(n));
     this.recalculateDanceIdle(true);
+    if (this.curCharacter === 'pico-speaker') { this.skipDance = true; this.playAnim('shoot1'); }
     this.dance();
   }
 
@@ -131,6 +134,12 @@ export class Character extends Sprite {
     } else if (this.animName.endsWith('miss') && this.finished) {
       this.dance(); this.finish();
     }
+    if (this.animationNotes.length > 0 && this.songPos > this.animationNotes[0][0]) {
+      const n = this.animationNotes.shift()!;
+      const d = (n[1] > 2 ? 3 : 1) + Math.floor(Math.random() * 2);
+      this.playAnim('shoot' + d, true);
+    }
+    if (this.curCharacter === 'pico-speaker' && this.finished && this.cur && this.cur.frames.length > 3) { this.play(this.animName, true, false, this.cur.frames.length - 3); }
     if (this.animName.startsWith('sing')) this.holdTimer += dt;
     else if (this.isPlayer) this.holdTimer = 0;
     if (!this.isPlayer && this.holdTimer >= stepCrochet * (0.0011 / rate) * this.singDuration) {

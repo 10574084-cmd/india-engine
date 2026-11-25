@@ -38,17 +38,6 @@ export async function buildNativeStage(ps: PlayState) {
     ps.layerBack.push(s);
     return s;
   };
-  if (ps.stageName === 'stage') {
-    await add('stageback', -600, -200, 0.9);
-    await add('stagefront', -650, 600, 0.9, 1.1);
-    if (!ps.prefs.lowQuality) {
-      await add('stage_light', -125, -100, 0.9, 1.1);
-      await add('stage_light', 1225, -100, 0.9, 1.1, true);
-      const c = await add('stagecurtains', -500, -300, 1.3, 0.9);
-      if (c) { ps.layerBack.splice(ps.layerBack.indexOf(c), 1); ps.layerFront.push(c); }
-    }
-    return;
-  }
   if (!a.exists(`stages/${ps.stageName}.lua`)) {
     // Escenario vanilla no portado: fondo neutro para que sea jugable
     const bg = new Sprite(-600, -300).makeGraphic(3000, 1800, 0xff1b1b2a);

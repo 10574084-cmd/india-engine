@@ -64,7 +64,7 @@ export class Note extends Sprite {
     const capH = Math.min(end.h * sc, len);
     ctx.save();
     ctx.globalAlpha = Math.min(1, this.alpha * this.multAlpha * (this.missed ? 0.3 : 0.6)) * cam.alpha;
-    const src = this.srcOverride ?? atlas.img;
+    const src = (srcPiece as any).src ?? this.srcOverride ?? atlas.img;
     const cx = this.susCenterX - cam.scroll.x * this.scrollFactor.x;
     const x0 = cx - w / 2;
     const bodyH = len - capH;
@@ -119,14 +119,35 @@ export class StrumNote extends Sprite {
 }
 
 /** Carga el atlas de una nota/strum y registra sus animaciones Sparrow estándar. */
-export async function loadNoteAtlas(assets: Assets, skin: string): Promise<Atlas | null> {
+export async function loadNoteAtlas(assets: Assets, skin: string, pixel = false): Promise<Atlas | null> {
+  if (pixel) {
+    const bmp = await assets.bitmap(assets.resolve(`images/pixelUI/${skin}.png`) ?? assets.resolve(`images/pixelUI/${DEFAULT_NOTE_SKIN}.png`) ?? '');
+    return bmp ? Atlas.grid(bmp, bmp.width / 4, bmp.height / 5) : null;
+  }
   return (await assets.atlas(skin)) ?? (await assets.atlas(DEFAULT_NOTE_SKIN));
 }
 
-export function setupStrumAnims(s: StrumNote, atlas: Atlas, skin: string) {
+/** Sustain pixel: rejilla 4x2 (fila 0 = cuerpo, fila 1 = remate). */
+export async function loadEndsAtlas(assets: Assets, skin: string): Promise<Atlas | null> {
+  const p = assets.resolve(`images/pixelUI/${skin}ENDS.png`) ?? assets.resolve(`images/pixelUI/${DEFAULT_NOTE_SKIN}ENDS.png`);
+  const bmp = p ? await assets.bitmap(p) : null;
+  return bmp ? Atlas.grid(bmp, bmp.width / 4, bmp.height / 2) : null;
+}
+
+export function setupStrumAnims(s: StrumNote, atlas: Atlas, skin: string, pixel = false) {
   s.setAtlas(atlas);
   s.texture = skin;
   const d = s.noteData;
+  if (pixel) {
+    s.pixel = true; s.antialiasing = false;
+    s.addByFrames('static', [d], 12, false);
+    s.addByFrames('pressed', [4 + d, 8 + d], 12, false);
+    s.addByFrames('confirm', [12 + d, 16 + d], 12, false);
+    s.scale.x = s.scale.y = 6;
+    s.updateHitbox();
+    s.playStrumAnim('static');
+    return;
+  }
   s.addByPrefix('green', 'arrowUP');
   s.addByPrefix('blue', 'arrowDOWN');
   s.addByPrefix('purple', 'arrowLEFT');
@@ -140,9 +161,16 @@ export function setupStrumAnims(s: StrumNote, atlas: Atlas, skin: string) {
   s.playStrumAnim('static');
 }
 
-export function setupNoteAnims(n: Note, atlas: Atlas, skin: string) {
+export function setupNoteAnims(n: Note, atlas: Atlas, skin: string, pixel = false) {
   n.setAtlas(atlas);
   n.texture = skin;
+  if (pixel) {
+    n.addByFrames(COL_ARRAY[n.noteData % 4] + 'Scroll', [4 + n.noteData % 4], 12, true);
+    n.scale.x = n.scale.y = 6; n.antialiasing = false;
+    n.play(COL_ARRAY[n.noteData % 4] + 'Scroll');
+    n.updateHitbox();
+    return;
+  }
   const c = COL_ARRAY[n.noteData % 4];
   n.addByPrefix(c + 'Scroll', c + '0');
   n.scale.x = n.scale.y = 0.7;

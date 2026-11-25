@@ -21,7 +21,7 @@ export async function loadChart(assets: Assets, songFolder: string, difficultySu
   if (!raw) return null;
   const s: SwagSong = raw.song && typeof raw.song === 'object' ? raw.song : raw;
   if (!s.notes) return null;
-  if (s.gfVersion == null) { s.gfVersion = s.player3 ?? 'gf'; }
+  if (s.gfVersion == null) { s.gfVersion = s.player3 ?? ''; }
   s.player1 ??= 'bf'; s.player2 ??= 'dad'; s.speed ??= 1; s.needsVoices ??= true;
   s.bpm ??= 100;
   for (const sec of s.notes) {
