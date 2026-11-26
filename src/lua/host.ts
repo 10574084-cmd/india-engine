@@ -1,3 +1,6 @@
+import { TypeText } from '../engine/typetext';
+import { AnimateAtlas, AnimateSprite } from '../engine/animate';
+import { makeFx, SUPPORTED_SHADERS } from '../engine/shaderfx';
 import { BUILTIN_SCRIPTS } from '../builtin/scripts';
 import { LuaFactory, LuaEngine } from 'wasmoon';
 import glueWasm from 'wasmoon/dist/glue.wasm?url';
@@ -73,6 +76,14 @@ export class ScriptHost {
   stageHandledByScript = false;
   vars = new Map<string, any>();
   shaderParams = new Map<string, any>();
+  textCache = new Map<string, string[]>();
+  clientData: any = (() => { const extra: Record<string, any> = { language: 'en-US', pauseMusic: 'Tea Time', checkForUpdates: false, flashing: true }; const self = this;
+    return new Proxy({}, { get: (_t, k: string) => k in extra ? extra[k] : (self.ps.prefs as any)[k], set: (_t, k: string, v: any) => { if (k in (self.ps.prefs as any) && !(k in extra)) (self.ps.prefs as any)[k] = v; else extra[k] = v; return true; } }); })();
+  chartCache = new Map<string, any>();
+  errorCount = new Map<string, number>();
+  animCache = new Map<string, AnimateAtlas | null>();
+  objShaders = new Map<any, { name: string; params: Record<string, any> }>();
+  shaderFiles = new Set<string>();
   sounds = new Map<string, Track>();
   private errorsShown = new Set<string>();
   pendingLoads: Promise<any>[] = [];
@@ -82,8 +93,11 @@ export class ScriptHost {
   get e() { return this.ps.e; }
 
   // ------------------------------------------------------------------ carga
-  async loadAll() {
+  private seenFiles = new Set<string>();
+  /** fase 'stage': solo el script del stage (antes de crear personajes); fase 'rest': el resto (después de crear personajes) */
+  async loadAll(phase: 'stage' | 'rest' = 'rest') {
     const ps = this.ps, a = ps.e.assets;
+    const firstLua = this.scripts.length, firstHx = this.hxScripts.length;
     // archivos guardados con saveFile() en sesiones anteriores
     try {
       for (let i = 0; i < localStorage.length; i++) {
@@ -94,7 +108,7 @@ export class ScriptHost {
         ps.e.vfs.add(mod ? `mods/${mod}/${f}` : `mods/${f}`, async () => data);
       }
     } catch { /* sin almacenamiento */ }
-    const seen = new Set<string>();
+    const seen = this.seenFiles;
     const queue: { path: string; mod: string }[] = [];
     const hxQueue: { path: string; mod: string }[] = [];
     const modOf = (p: string) => /^mods\/([^/]+)\//i.exec(p)?.[1] ?? '';
@@ -113,30 +127,38 @@ export class ScriptHost {
         if (!seen.has(k)) { seen.add(k); (file.endsWith('.hx') ? hxQueue : queue).push({ path: a.vfs.realPath(c)!, mod: modOf(c) }); }
       }
     };
-    // 1. scripts globales   2. scripts de la canción   3. stage   4. eventos/notetypes del chart
+    if (phase === 'stage') {
+      const before = queue.length + hxQueue.length;
+      addFile(`stages/${ps.stageName}.lua`);
+      addFile(`stages/${ps.stageName}.hx`);
+      if (queue.length + hxQueue.length > before) this.stageHandledByScript = true;
+    } else {
     addDir('scripts');
     addDir(`data/${ps.songName}`);
-    const stageFile = `stages/${ps.stageName}.lua`;
-    const before = queue.length + hxQueue.length;
-    addFile(stageFile);
-    addFile(`stages/${ps.stageName}.hx`);
-    if (queue.length + hxQueue.length > before) this.stageHandledByScript = true;
+    for (const n of new Set([ps.song.player1, ps.song.player2, ps.song.gfVersion || ps.stageImpl?.defaultGF || 'gf'])) {
+      if (!n) continue; addFile(`characters/${n}.lua`); addFile(`characters/${n}.hx`);
+    }
     const evs = new Set(ps.eventNotes.map(x => x.event));
     for (const ev of evs) { addFile(`custom_events/${ev}.lua`); addFile(`custom_events/${ev}.hx`); }
     const types = new Set<string>();
     ps.song.notes.forEach(s => s.sectionNotes.forEach(n => { if (typeof n[3] === 'string' && n[3]) types.add(n[3]); }));
     for (const t of types) { addFile(`custom_notetypes/${t}.lua`); addFile(`custom_notetypes/${t}.hx`); }
 
+    }
     for (const b of BUILTIN_SCRIPTS) {
-      if (!ps.prefs.scripts?.[b.id]) continue;
+      if (phase === 'stage' || !ps.prefs.scripts?.[b.id]) continue;
       await this.prefetch(b.src);
       const s = new LuaScript(this, 'builtin/' + b.id + '.lua', b.id + '.lua', '');
       this.scripts.push(s);
       await s.init(b.src);
     }
-    for (const q of queue) {
+    for (let qi = 0; qi < queue.length; qi++) {
+      const q = queue[qi];
       let src: string;
       try { src = await a.vfs.text(q.path); } catch { continue; }
+      // scripts que este script cargará con addLuaScript('x'): se precargan para que estén listos al llamarlos
+      { const ra = /addLuaScript\s*\(\s*(['"])([^'"]+)\1/g; let m;
+        while ((m = ra.exec(src))) { const f = m[2].endsWith('.lua') ? m[2] : m[2] + '.lua'; const before = queue.length; addFile(f); void before; } }
       await this.prefetch(src);
       const s = new LuaScript(this, q.path, q.path.split('/').pop()!, q.mod);
       this.scripts.push(s);
@@ -152,8 +174,9 @@ export class ScriptHost {
     }
     // cargas asíncronas que dispararon los scripts durante onCreate
     await Promise.all(this.pendingLoads); this.pendingLoads = [];
-    // onCreate (después de que todos los scripts estén cargados, igual que Psych)
-    this.call('onCreate');
+    // onCreate (solo de los scripts nuevos de esta fase)
+    this.syncGlobals();
+    for (const sc of [...this.scripts.slice(firstLua), ...this.hxScripts.slice(firstHx)] as { closed: boolean; call(n: string, a: any[]): any }[]) if (!sc.closed) sc.call('onCreate', []);
     await Promise.all(this.pendingLoads); this.pendingLoads = [];
   }
 
@@ -170,12 +193,35 @@ export class ScriptHost {
     const a = this.e.assets;
     const keys = new Set<string>();
     const re = [
-      /make(?:Animated)?LuaSprite\s*\(\s*(['"])[^'"]*\1\s*,\s*(['"])([^'"]+)\2/g,
+      /make(?:Animated)?LuaSprite\s*\(\s*[^,()]+,\s*(['"])([^'"]+)\1()/g,
       /loadGraphic\s*\(\s*(['"])[^'"]*\1\s*,\s*(['"])([^'"]+)\2/g,
       /loadFrames\s*\(\s*(['"])[^'"]*\1\s*,\s*(['"])([^'"]+)\2/g,
       /precacheImage\s*\(\s*(['"])([^'"]+)\1()/g,
     ];
     for (const r of re) { let m; while ((m = r.exec(src))) keys.add(m[3] || m[2]); }
+    { const ra = /loadAnimateAtlas\s*\(\s*[^,()]+,\s*(['"])([^'"]+)\1()/g; let m3;
+      while ((m3 = ra.exec(src))) { const f = m3[2]; if (!this.animCache.has(f)) this.animCache.set(f, await AnimateAtlas.load(a, f)); } }
+    if (/coolTextFile/.test(src)) {
+      const folder = this.ps.songName;
+      for (const c of [`data/${folder}`, 'data']) for (const d of a.candidates(c)) for (const f of a.vfs.listFiles(d, '.txt')) {
+        const key = `${c}/${f}`.toLowerCase();
+        if (this.textCache.has(key)) continue;
+        try { this.textCache.set(key, (await a.vfs.text(a.vfs.realPath(`${d}/${f}`)!)).split('\n').map(x => x.trim())); } catch { /* ilegible */ }
+      }
+    }
+    if (/getChart/.test(src)) {
+      const folder = this.ps.songName;
+      for (const c of a.candidates(`data/${folder}`)) for (const f of a.vfs.listFiles(c, '.json')) {
+        const key = `${folder}/${f.replace(/\.json$/i, '').toLowerCase()}`;
+        if (this.chartCache.has(key)) continue;
+        try { this.chartCache.set(key, JSON.parse(await a.vfs.text(a.vfs.realPath(`${c}/${f}`)!))); } catch { /* json inválido */ }
+      }
+    }
+    if (/objects\.Character/.test(src)) {
+      const lits = new Set<string>(); const rl = /(['"])([\w\-./ ]{2,40})\1/g; let ml;
+      while ((ml = rl.exec(src))) { lits.add(ml[2]); lits.add('cutscenes/' + ml[2]); }
+      for (const n of lits) if (a.exists(`characters/${n}.json`)) await preloadCharacter(a, n);
+    }
     const hxk = hxPrefetchKeys(src);   // bloques runHaxeCode dentro del Lua
     for (const k of hxk.images) keys.add(k);
     const snds = new Set<string>(hxk.sounds);
@@ -197,8 +243,9 @@ export class ScriptHost {
 
   error(s: { name: string }, where: string, e: any) {
     const msg = `${s.name}: ${where}: ${(e && e.message) ? String(e.message).split('\n')[0] : e}`;
-    console.error('[Lua]', msg, e);
     const k = msg.slice(0, 120);
+    const n = (this.errorCount.get(k) ?? 0) + 1; this.errorCount.set(k, n);
+    if (n <= 3 || n % 500 === 0) console.error('[Lua]', msg + (n > 3 ? ` (x${n})` : '') + '\n' + String(e?.stack ?? '').slice(0, 900));
     if (!this.errorsShown.has(k)) { this.errorsShown.add(k); this.e.toast('[Lua] ' + msg, '#ff7777', 7); }
   }
 
@@ -250,7 +297,7 @@ export class ScriptHost {
       set('ghostTapping', p.ghostTapping); set('hideHud', p.hideHud); set('timeBarType', p.timeBarType);
       set('scoreZoom', p.scoreZoom); set('cameraZoomOnBeat', p.camZooms); set('flashingLights', p.flashing);
       set('noteOffset', p.noteOffset); set('healthBarAlpha', p.healthBarAlpha); set('noResetButton', false);
-      set('lowQuality', p.lowQuality); set('shadersEnabled', false);
+      set('lowQuality', p.lowQuality); set('shadersEnabled', true);
       set('defaultBoyfriendX', ps.BF_X); set('defaultBoyfriendY', ps.BF_Y);
       set('defaultOpponentX', ps.DAD_X); set('defaultOpponentY', ps.DAD_Y);
       set('defaultGirlfriendX', ps.GF_X); set('defaultGirlfriendY', ps.GF_Y);
@@ -267,7 +314,7 @@ export class ScriptHost {
     const set = (k: string, v: any) => g.set(k, v);
     set('curBpm', c.bpm); set('bpm', ps.song.bpm); set('scrollSpeed', ps.songSpeed);
     set('crochet', c.crochet); set('stepCrochet', c.stepCrochet); set('songLength', ps.songLength);
-    set('startedCountdown', ps.startedCountdown);
+    set('startedCountdown', ps.startedCountdown); set('playbackRate', ps.playbackRate); set('inGameOver', ps.mode === 'dead'); set('seenCutscene', !!ps.opts.seenCutscene); set('songPath', ps.songName);
     set('curSection', ps.curSection); set('curBeat', ps.curBeat); set('curStep', ps.curStep);
     set('mustHitSection', sec ? !!sec.mustHitSection : false); set('altAnim', sec ? !!sec.altAnim : false); set('gfSection', sec ? !!sec.gfSection : false);
     set('score', ps.songScore); set('misses', ps.songMisses); set('hits', ps.songHits); set('combo', ps.combo);
@@ -368,24 +415,38 @@ export class ScriptHost {
     switch (c) {
       case 'FlxG': {
         const inp = this.e.input;
-        return { width: W, height: H, elapsed: 1 / 60, sound: { music: this.musicProxy() }, save: { data: {} },
+        return { onMobile: false, android: { justReleased: { BACK: false } }, touches: { list: [] }, width: W, height: H, elapsed: 1 / 60, sound: { music: this.musicProxy() }, save: { data: {} },
           mouse: { get x() { return inp.mouseX; }, get y() { return inp.mouseY; }, get screenX() { return inp.mouseX; }, get screenY() { return inp.mouseY; },
             get visible() { return inp.mouseVisible; }, set visible(v: boolean) { inp.setMouseVisible(!!v); },
             get justPressed() { return inp.mouseJustPressed(0); }, get pressed() { return inp.mousePressed(0); }, get justReleased() { return inp.mouseJustReleased(0); },
             get justPressedRight() { return inp.mouseJustPressed(2); }, get pressedRight() { return inp.mousePressed(2); } } };
       }
-      case 'ClientPrefs': return { data: ps.prefs };
+      case 'ClientPrefs': return { data: this.clientData, getGameplaySetting: (k: string, d?: any) => d ?? false };
       case 'PlayState': return { ...this.psProxy(), instance: ps, SONG: ps.song, curStage: ps.stageName, isStoryMode: !!ps.opts.isStory, storyDifficulty: 1 };
       case 'Conductor': return ps.cond;
       case 'MainMenuState': return { psychEngineVersion: PSYCH_COMPAT_VERSION };
       case 'GameOverSubstate': {
         const d = ps.gameOverDefs;
-        return { get characterName() { return d.char; }, set characterName(v: string) { d.char = v; ps.song.gameOverChar = v; },
+        return { instance: { get boyfriend() { return (ps as any).deadChar; } },
+          get characterName() { return d.char; }, set characterName(v: string) { d.char = v; ps.song.gameOverChar = v; },
           get deathSoundName() { return d.sound; }, set deathSoundName(v: string) { d.sound = v; ps.song.gameOverSound = v; },
           get loopSoundName() { return d.loop; }, set loopSoundName(v: string) { d.loop = v; ps.song.gameOverLoop = v; },
           get endSoundName() { return d.end; }, set endSoundName(v: string) { d.end = v; ps.song.gameOverEnd = v; } };
       }
-      case 'Paths': return {};
+      case 'Paths': return {
+        formatToSongPath: (x: string) => String(x).toLowerCase().replace(/[~&;:<>#\s]/g, '-').replace(/[.,'"%?!]/g, ''),
+        txt: (k: string) => 'data/' + k + '.txt', json: (k: string) => 'data/' + k + '.json', image: (k: string) => 'images/' + k + '.png',
+      };
+      case 'Song': return {
+        getChart: (name: string, folder?: string) => {
+          const f = String(folder ?? ps.songName).toLowerCase();
+          const j = this.chartCache.get(`${f}/${String(name).toLowerCase()}`);
+          const c = j ? (j.song && typeof j.song === 'object' ? j.song : j) : undefined;
+          const clean = (v: any): any => Array.isArray(v) ? v.map(x => x === null || x === undefined ? 0 : clean(x)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null && x !== undefined).map(([k, x]) => [k, clean(x)])) : v;
+          return c ? clean(c) : undefined;
+        },
+      };
+      case 'CoolUtil': return { coolTextFile: (p: string) => this.textCache.get(String(p).toLowerCase()) ?? [], floorDecimal: (v: number, d: number) => Math.floor(v * 10 ** d) / 10 ** d };
     }
     return undefined;
   }
@@ -463,7 +524,7 @@ export class ScriptHost {
     const g = script.lua.global;
     const def = (name: string, fn: (...a: any[]) => any) => {
       const wrapped = (...a: any[]) => {
-        try { return fn(...a); } catch (err) { host.error(script, name, err); return undefined; }
+        try { const r = fn(...a); return r === null ? undefined : r; } catch (err) { host.error(script, name, err); return undefined; }
       };
       if (!host.apiFns.has(name)) host.apiFns.set(name, wrapped);
       g.set(name, wrapped);
@@ -500,18 +561,28 @@ export class ScriptHost {
     def('getVar', (k: string) => host.vars.has(k) ? host.vars.get(k) : null);
     def('addLuaScript', (f: string) => { void host.addScript(f); });
     def('removeLuaScript', (f: string) => { for (const s of host.scripts) if (s.path.toLowerCase().includes(String(f).toLowerCase())) s.close(); });
+    def('getTranslationPhrase', (k: string, d?: string) => d ?? k);
     def('setScoreText', (t = '') => { ps.scoreTxt.text = String(t); return true; });
     def('callOnScripts', (fn: string, args: any[] = []) => host.call(fn, Array.isArray(args) ? args : Object.values(args as any)));
     def('loadMultipleFrames', () => undefined);
     def('callOnLuas', (fn: string, args: any[] = []) => { host.call(fn, Array.isArray(args) ? args : Object.values(args ?? {})); });
     def('setOnLuas', (k: string, v: any) => { for (const s of host.scripts) if (!s.closed) s.lua.global.set(k, v); });
     const hxOf = () => { if (!script.hx) script.hx = new HxScript(host, script.path, script.name, script.modFolder); return script.hx; };
-    def('runHaxeCode', (code: string, _vars?: any) => {
+    const toLua = (r: any): any => {
+      if (r && typeof r === 'object' && (Array.isArray(r) || Object.getPrototypeOf(r) === Object.prototype)) {
+        const lit = (v: any): string => Array.isArray(v) ? '{' + v.map(lit).join(',') + '}'
+          : v && typeof v === 'object' ? '{' + Object.entries(v).filter(([, x]) => x !== null && x !== undefined && typeof x !== 'function').map(([k, x]) => `[${JSON.stringify(k)}]=${lit(x)}`).join(',') + '}'
+          : typeof v === 'string' ? JSON.stringify(v) : typeof v === 'number' ? (isFinite(v) ? String(v) : '0') : typeof v === 'boolean' ? String(v) : 'nil';
+        try { script.lua.doStringSync('__LT = ' + lit(r)); return '__LUATABLE__'; } catch { return undefined; }
+      }
+      return r;
+    };
+    def('runHaxeCode', (code: string, vars?: any) => {
       const h = hxOf();
-      try { const r = h.exec(String(code)); return r === null ? undefined : r; }
+      try { const r = h.exec(String(code), vars); return r === null ? undefined : toLua(r); }
       catch (err) { host.error(script, 'runHaxeCode', err); return null; }
     });
-    def('runHaxeFunction', (fn: string, args?: any) => { const h = hxOf(); const a = Array.isArray(args) ? args : args && typeof args === 'object' ? Object.values(args) : []; try { const r = h.rt.interp.call(String(fn), a); return r === null ? undefined : r; } catch (err) { host.error(script, 'runHaxeFunction', err); return null; } });
+    def('runHaxeFunction', (fn: string, args?: any) => { const h = hxOf(); const a = Array.isArray(args) ? args : args && typeof args === 'object' ? Object.values(args) : []; try { const r = h.rt.interp.call(String(fn), a); return r === null ? undefined : toLua(r); } catch (err) { host.error(script, 'runHaxeFunction', err); return null; } });
     def('addHaxeLibrary', () => null);
     def('addHScript', () => false); def('removeHScript', () => false);
     def('callScript', (f: string, fn: string, args: any[] = []) => {
@@ -597,7 +668,7 @@ export class ScriptHost {
     const animTarget = (tag: string) => host.spriteOrNull(tag);
     const addAnim = (tag: string, name: string, prefix: string, fps = 24, loop = true) => {
       const s = animTarget(tag); if (!(s instanceof Sprite)) return false;
-      host.whenLoaded(s, () => { s.addByPrefix(name, prefix, fps, loop); });
+      host.whenLoaded(s, () => { s.addByPrefix(name, prefix, fps, loop); if (!s.cur) s.play(name, true); });
       return true;
     };
     def('addAnimationByPrefix', (t: string, n: string, p: string, fps = 24, loop = true) => addAnim(t, n, p, fps, loop));
@@ -605,7 +676,7 @@ export class ScriptHost {
     const addIdx = (t: string, n: string, p: string, ind: any, fps = 24, loop = false) => {
       const s = animTarget(t); if (!(s instanceof Sprite)) return false;
       const arr = String(ind).split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
-      host.whenLoaded(s, () => { s.addByIndices(n, p, arr, '', fps, loop); });
+      host.whenLoaded(s, () => { s.addByIndices(n, p, arr, '', fps, loop); if (!s.cur) s.play(n, true); });
       return true;
     };
     def('addAnimationByIndices', (t: string, n: string, p: string, ind: any, fps = 24) => addIdx(t, n, p, ind, fps, false));
@@ -624,6 +695,7 @@ export class ScriptHost {
     const play = (t: string, anim: string, force = false, rev = false, frame = 0) => {
       const o = host.objectAt(t);
       if (o instanceof Character) { o.playAnim(anim, force, rev, frame); return true; }
+      if (o instanceof AnimateSprite) { o.play(anim, force); return true; }
       if (o instanceof Sprite) { host.whenLoaded(o, () => o.play(anim, force, rev, frame)); return true; }
       return false;
     };
@@ -861,18 +933,55 @@ export class ScriptHost {
     def('setMouseVisible', (v: boolean) => input.setMouseVisible(!!v));
     def('gamepadAnalogX', () => 0); def('gamepadAnalogY', () => 0);
 
-    // ---------------------------------------------------------- shaders (parámetros guardados; el render WebGL llega más tarde)
+    // ---------------------------------------------------------- shaders (emulados en Canvas2D: adjustColor; el resto guarda parámetros)
     const shaderTag = (o: any) => String(o);
-    for (const n of ['initLuaShader', 'setSpriteShader', 'setShaderSampler2D'])
-      def(n, () => { host.unsupportedOnce(script, 'shaders (' + n + ')'); return false; });
-    def('removeSpriteShader', () => false);
+    const shObj = (o: any) => host.objectAt(String(o));
+    const refresh = (obj: any) => {
+      const sh = host.objShaders.get(obj); if (!sh) return;
+      const fx = makeFx(sh.name, sh.params);
+      if (obj && 'fx' in obj) obj.fx = fx;
+    };
+    def('initLuaShader', (name: string) => { host.shaderFiles.add(String(name)); return true; });
+    def('setSpriteShader', (o: string, name: string) => {
+      const obj = shObj(o); if (!obj) return false;
+      if (!SUPPORTED_SHADERS.has(String(name))) { host.unsupportedOnce(script, 'shader ' + name + ' (solo se emula adjustColor)'); return false; }
+      const sh = { name: String(name), params: {} as Record<string, any> };
+      host.objShaders.set(obj, sh); refresh(obj); return true;
+    });
+    def('removeSpriteShader', (o: string) => { const obj = shObj(o); if (obj) { host.objShaders.delete(obj); if ('fx' in obj) obj.fx = null; } return true; });
+    def('setShaderSampler2D', () => true);
     for (const [kind, fix] of [['Float', Number], ['Int', (v: any) => Math.trunc(Number(v))], ['Bool', Boolean]] as [string, (v: any) => any][]) {
-      def('setShader' + kind, (sh: string, prop: string, v: any) => { host.shaderParams.set(shaderTag(sh) + '.' + prop, fix(v)); host.unsupportedOnce(script, 'shaders'); return true; });
-      def('getShader' + kind, (sh: string, prop: string) => host.shaderParams.get(shaderTag(sh) + '.' + prop) ?? null);
-      def('setShader' + kind + 'Array', (sh: string, prop: string, v: any) => { host.shaderParams.set(shaderTag(sh) + '.' + prop, Array.isArray(v) ? v.map(fix) : Object.values(v ?? {}).map(fix)); return true; });
-      def('getShader' + kind + 'Array', (sh: string, prop: string) => host.shaderParams.get(shaderTag(sh) + '.' + prop) ?? null);
+      const put = (sh: string, prop: string, v: any) => {
+        host.shaderParams.set(shaderTag(sh) + '.' + prop, v);
+        const obj = shObj(sh); const s = obj && host.objShaders.get(obj);
+        if (s) { s.params[prop] = v; refresh(obj); }
+      };
+      def('setShader' + kind, (sh: string, prop: string, v: any) => { put(sh, prop, fix(v)); return true; });
+      def('getShader' + kind, (sh: string, prop: string) => host.shaderParams.get(shaderTag(sh) + '.' + prop) ?? undefined);
+      def('setShader' + kind + 'Array', (sh: string, prop: string, v: any) => { put(sh, prop, Array.isArray(v) ? v.map(fix) : Object.values(v ?? {}).map(fix)); return true; });
+      def('getShader' + kind + 'Array', (sh: string, prop: string) => host.shaderParams.get(shaderTag(sh) + '.' + prop) ?? undefined);
     }
-    for (const n of ['makeFlxAnimateSprite', 'loadAnimateAtlas', 'addAnimationBySymbol', 'addAnimationBySymbolIndices']) def(n, () => { host.unsupportedOnce(script, 'atlas Animate (' + n + ')'); });
+
+    def('makeFlxAnimateSprite', (tag: string, x = 0, y = 0) => {
+      const old = ps.luaSprites.get(tag); if (old) ps.removeDrawable(old);
+      const sp = new AnimateSprite(); sp.x = x; sp.y = y; ps.luaSprites.set(tag, sp); return true;
+    });
+    def('loadAnimateAtlas', (tag: string, folder: string) => {
+      const sp = ps.luaSprites.get(tag); if (!(sp instanceof AnimateSprite)) return false;
+      const f = String(folder);
+      const set = (at: AnimateAtlas | null | undefined) => { if (at) sp.atlas = at; };
+      if (host.animCache.has(f)) set(host.animCache.get(f));
+      else host.pendingLoads.push(AnimateAtlas.load(ps.e.assets, f).then(at => { host.animCache.set(f, at); set(at); }));
+      return true;
+    });
+    def('addAnimationBySymbol', (tag: string, name: string, symbol: string, fps = 24, loop = false) => {
+      const sp = ps.luaSprites.get(tag); if (!(sp instanceof AnimateSprite)) return false; sp.addBySymbol(name, symbol, fps, loop); return true;
+    });
+    def('addAnimationBySymbolIndices', (tag: string, name: string, symbol: string, indices: any, fps = 24, loop = false) => {
+      const sp = ps.luaSprites.get(tag); if (!(sp instanceof AnimateSprite)) return false;
+      const arr = Array.isArray(indices) ? indices : String(indices).split(',').map(Number);
+      sp.addBySymbolIndices(name, symbol, arr.map(Number), fps, loop); return true;
+    });
 
     // ---------------------------------------------------------- substates personalizados (GUI en Lua)
     def('openCustomSubstate', (name: string, pause = false) => ps.openSub(String(name), !!pause));
@@ -900,11 +1009,11 @@ export class ScriptHost {
       return a;
     };
     const argList = (a: any): any[] => (Array.isArray(a) ? a : a && typeof a === 'object' ? Object.values(a) : a == null ? [] : [a]).map(unwrap);
-    const callOn = (parent: any, key: string, args: any[]) => {
+    const callOn = (parent: any, key: string, args: any[], allowObj = false) => {
       const fn = parent?.[key];
       if (typeof fn !== 'function') { console.warn('[Lua] callMethod: no existe el método', key); return null; }
       const r = fn.apply(parent, args);
-      return r === undefined ? null : (typeof r === 'object' ? null : r);
+      return r === undefined ? null : (typeof r === 'object' && !allowObj ? null : r);
     };
     def('callMethod', (path: string, args?: any) => {
       const r = host.resolve(String(path)); if (!r) return null;
@@ -914,14 +1023,19 @@ export class ScriptHost {
       const root = host.classRoot(String(cls)); if (!root) { host.unsupportedOnce(script, 'clase ' + cls); return null; }
       const parts = String(fn).split('.'); let o = root;
       for (const p of parts.slice(0, -1)) o = o?.[p];
-      return callOn(o, parts[parts.length - 1], argList(args));
+      const r = callOn(o, parts[parts.length - 1], argList(args), true);
+      return toLua(r);
     });
+    try { script.lua.doStringSync(`for _, n in ipairs({'callMethodFromClass', 'runHaxeFunction', 'runHaxeCode'}) do local f = _G[n]; _G[n] = function(...) local r = f(...); if r == '__LUATABLE__' then local t = __LT; __LT = nil; return t end; return r end end`); } catch { /* sin motor */ }
     def('instanceArg', (tag: string) => ({ __instance: String(tag) }));
     def('createInstance', (tag: string, cls: string, args?: any) => {
       const c = String(cls).split('.').pop(); const a = argList(args);
       let o: any = null;
       if (c === 'FlxSprite') o = new Sprite(Number(a[0] ?? 0), Number(a[1] ?? 0));
       else if (c === 'FlxText') o = new TextObj(Number(a[0] ?? 0), Number(a[1] ?? 0), Number(a[2] ?? 0), String(a[3] ?? ''), Number(a[4] ?? 8) * 2);
+      else if (c === 'FlxTypeText') { o = new TypeText(Number(a[0] ?? 0), Number(a[1] ?? 0), Number(a[2] ?? 0), String(a[3] ?? ''), Number(a[4] ?? 8) * 2); ps.luaTexts.set(String(tag), o); }
+      else if (c === 'Character') o = new Character(Number(a[0] ?? 0), Number(a[1] ?? 0), String(a[2] ?? 'bf'), !!a[3], e.assets);
+      else if (c === 'FlxPieDial') { o = new Sprite(Number(a[0] ?? 0), Number(a[1] ?? 0)); o.replaceColor = () => undefined; o.amount = 0; }
       if (!o) { host.unsupportedOnce(script, 'createInstance(' + cls + ')'); return false; }
       o.camera = 'game'; host.vars.set(String(tag), o); return true;
     });
@@ -962,6 +1076,7 @@ export class ScriptHost {
     const f = file.endsWith('.lua') ? file : file + '.lua';
     const p = a.resolve(f);
     if (!p) return;
+    if (this.scripts.some(x => x.path === p)) return;
     const src = await a.vfs.text(p);
     await this.prefetch(src);
     const s = new LuaScript(this, p, p.split('/').pop()!, /^mods\/([^/]+)\//i.exec(p)?.[1] ?? '');

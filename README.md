@@ -67,3 +67,16 @@ HScript (`.hx` en `scripts/`, `stages/`, `custom_events/`, `custom_notetypes/`, 
 ## Pack de scripts Lua incluidos
 En **Options** hay una sección de scripts que se activan/desactivan: Game Over+, Pulso de fondo, Lluvia, Nieve, Viñeta, Cámara con vaivén, Iconos con rebote, Drenar vida, Mostrar ms y Flash al fallar. Están en `src/builtin/scripts.ts` y sirven de ejemplo.
 Nuevo para mods: `GameOverSubstate.characterName/deathSoundName/loopSoundName/endSoundName` (con `setPropertyFromClass`), callbacks `onGameOverConfirm`, `onEventPushed`, `goodNoteHitPre`, `opponentNoteHitPre`, `onKeyPressPre`, `onKeyReleasePre`, `onRecalculateRating`, y funciones `setScoreText`, `callOnScripts`. Los sprites en la cámara `other` se dibujan también en la pantalla de Game Over.
+
+## Pico Mix incluido en el juego base
+El deploy descarga `pico_mix_psych_port.zip` de la release `ClaudeAi` y lo instala en `public/mods/Pico Mix` (`npm run extract -- base.zip --mod pico.zip`), así que sus 15 canciones salen en Freeplay sin cargar nada.
+Para que corra tal cual en Psych 1.0 se añadió:
+- **Shaders**: `adjustColor` emulado por píxel en Canvas2D (los demás shaders guardan parámetros y avisan una vez).
+- **Atlas de Adobe Animate** (`Animation.json` + `spritemap`): `makeFlxAnimateSprite`, `loadAnimateAtlas`, `addAnimationBySymbol(+Indices)`, `anim.curFrame/length/framerate/pause`. Lo usa el altavoz Abot.
+- **Personajes con varias hojas** (`"image": "a, b, c"`), scripts de personaje (`characters/<nombre>.lua`), `addLuaScript` precargado.
+- **Orden de carga como Psych**: el script del stage corre antes de crear personajes; el resto (globales, canción, personaje, eventos) después.
+- **events.json** sin envoltorio `song`, `seenCutscene`/`songPath`, `getChart`, `coolTextFile`, `Paths.formatToSongPath`, `ClientPrefs.data.language/pauseMusic`.
+- **Lua**: `createInstance` de `Character`, `FlxTypeText` (texto que se escribe) y `FlxPieDial`; tablas devueltas por `runHaxeCode`/`runHaxeFunction`/`callMethodFromClass`; `runHaxeCode(code, {vars})`.
+- **HScript**: funciones sin llaves, `getLuaObject`, `game.variables`, `SpectralAnalyzer` (audio real vía AnalyserNode), `FlxG.sound.load`, `FlxG.android/touches/onMobile`.
+- **Game Over**: `onGameOverStart` corre cuando ya existe el personaje de muerte, `onUpdate` durante la muerte, y sprites de la cámara de juego añadidos al morir se dibujan. Si faltan las imágenes de muerte del mod se usa `bf-dead`.
+Limitaciones: shaders `dropShadow`/`textureSwap`/`rain` no se renderizan, y el personaje `pico-holding-nene-dead` (Animate como personaje) aún no.

@@ -57,10 +57,13 @@ export class Track {
 export class AudioSys {
   ctx: AudioContext;
   master: GainNode;
+  analyser!: AnalyserNode;
   constructor() {
     this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ latencyHint: 'interactive' });
     this.master = this.ctx.createGain();
     this.master.connect(this.ctx.destination);
+    this.analyser = this.ctx.createAnalyser(); this.analyser.fftSize = 2048; this.analyser.smoothingTimeConstant = 0.6;
+    this.master.connect(this.analyser);
   }
   async resume() { if (this.ctx.state !== 'running') { try { await this.ctx.resume(); } catch { /* sin gesto de usuario aún */ } } }
   async decode(buf: ArrayBuffer): Promise<AudioBuffer> {

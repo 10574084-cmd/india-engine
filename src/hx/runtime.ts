@@ -83,6 +83,7 @@ export class HxRuntime implements HxHooks {
       case 'Function_Stop': return { found: true, value: FUNCTION_STOP };
       case 'Function_Continue': return { found: true, value: FUNCTION_CONTINUE };
       case 'Function_StopHScript': case 'Function_StopLua': case 'Function_StopAll': return { found: true, value: name };
+      case 'getLuaObject': return { found: true, value: (t: string) => ps.luaSprites.get(String(t)) ?? ps.luaTexts.get(String(t)) ?? null };
       case 'add': return { found: true, value: (o: Drawable) => this.addObj(o) };
       case 'remove': return { found: true, value: (o: Drawable) => { ps.removeDrawable(o); return o; } };
       case 'insert': return { found: true, value: (pos: number, o: Drawable) => this.insertObj(pos, o) };
@@ -173,6 +174,22 @@ export class HxRuntime implements HxHooks {
         return { found: true, value: s };
       }
       case 'FlxTypedGroup': case 'FlxSpriteGroup': case 'FlxGroup': return { found: true, value: new HxGroup() };
+      case 'SpectralAnalyzer': {
+        const bars = Number(args[1] ?? 7), an = this.e.audio.analyser; const prev: number[] = new Array(bars).fill(0);
+        const obj: any = { fftN: 256, getLevels: (_old?: any) => {
+          const data = new Uint8Array(an.frequencyBinCount); an.getByteFrequencyData(data);
+          const hz = this.e.audio.ctx.sampleRate / an.fftSize, lo = 40, hi = 16000, out: { value: number; peak: number }[] = [];
+          for (let i = 0; i < bars; i++) {
+            const f0 = lo * Math.pow(hi / lo, i / bars), f1 = lo * Math.pow(hi / lo, (i + 1) / bars);
+            const b0 = Math.max(0, Math.floor(f0 / hz)), b1 = Math.max(b0 + 1, Math.ceil(f1 / hz)); let m = 0;
+            for (let b = b0; b < b1 && b < data.length; b++) m = Math.max(m, data[b]);
+            const v = Math.pow(m / 255, 2.2); prev[i] = Math.max(v, prev[i] - 0.08);
+            out.push({ value: Math.min(1, prev[i]), peak: v });
+          }
+          return out;
+        } };
+        return { found: true, value: obj };
+      }
       case 'FlxTimer': return { found: true, value: new HxTimer(this) };
       case 'FlxPoint': return { found: true, value: { x: Number(args[0] ?? 0), y: Number(args[1] ?? 0) } };
       case 'StringBuf': { let s = ''; return { found: true, value: { add: (x: any) => { s += str(x); }, toString: () => s, get length() { return s.length; } } }; }
@@ -208,16 +225,16 @@ export class HxRuntime implements HxHooks {
     };
     const rawKey = (k: string) => { const s = String(k).toUpperCase(); if (/^[A-Z]$/.test(s)) return 'Key' + s; if (/^\d$/.test(s)) return 'Digit' + s; const m: Record<string, string> = { SPACE: 'Space', ENTER: 'Enter', ESCAPE: 'Escape', LEFT: 'ArrowLeft', RIGHT: 'ArrowRight', UP: 'ArrowUp', DOWN: 'ArrowDown', SHIFT: 'ShiftLeft', CONTROL: 'ControlLeft', TAB: 'Tab', BACKSPACE: 'Backspace' }; return m[s] ?? s; };
     const keyProxy = (fn: (code: string) => boolean) => new Proxy({}, { get: (_t, k) => fn(rawKey(String(k))) });
-    const musicProxy = { get volume() { return 1; }, set volume(_v: number) { }, fadeIn: () => { }, fadeOut: () => { }, play: () => { }, stop: () => { } };
+    const musicProxy = { _channel: { __audioSource: {} }, get volume() { return 1; }, set volume(_v: number) { }, fadeIn: () => { }, fadeOut: () => { }, play: () => { }, stop: () => { } };
     const playSnd = (s: any, vol = 1) => {
       const key = s && s.__sound; if (!key) return null;
       void e().assets.sound(key).then(b => e().audio.playSound(b, vol)); return { volume: vol, stop() { }, pause() { }, play() { } };
     };
     const FlxG = {
-      width: W, height: H, get elapsed() { return 1 / 60; },
+      onMobile: false, android: { justReleased: { BACK: false }, pressed: { BACK: false } }, touches: { list: [] }, width: W, height: H, get elapsed() { return 1 / 60; },
       get camera() { return ps().cams.game; },
       cameras: { get list() { return [ps().cams.game, ps().cams.hud, ps().cams.other]; }, flash: (c: number, d = 1) => ps().cams.game.flash(c & 0xffffff, d), shake: (i = 0.05, d = 0.5) => ps().cams.game.shake(i, d) },
-      sound: { play: playSnd, playMusic: () => { }, music: musicProxy },
+      sound: { play: playSnd, load: (sn: any, vol = 1) => ({ play: (_f?: boolean) => playSnd(sn, vol), stop() { }, pause() { }, volume: vol }), playMusic: () => { }, music: musicProxy },
       random: {
         int: (a = 0, b = 2147483647, ex?: number[]) => { for (let i = 0; i < 40; i++) { const v = a + Math.floor(Math.random() * (b - a + 1)); if (!ex || !ex.includes(v)) return v; } return a; },
         float: (a = 0, b = 1) => a + Math.random() * (b - a), bool: (chance = 50) => Math.random() * 100 < chance,
@@ -335,8 +352,9 @@ export class HxScript {
   }
 
   /** Ejecuta código. Devuelve el valor de la última expresión / return. */
-  exec(source: string): any {
+  exec(source: string, vars?: Record<string, any>): any {
     const prog = parseHx(source);
+    if (vars && typeof vars === 'object') for (const [k, v] of Object.entries(vars)) this.rt.interp.globals.def(k, v);
     return this.rt.interp.run(prog);
   }
 

@@ -140,11 +140,11 @@ export class MenuState implements State {
   async play(s: SongEntry) {
     const diff = s.diffs[this.diffIdx % s.diffs.length];
     const e = this.e;
-    const start = () => {
+    const start = (retry = false) => {
       void e.switchState(() => new PlayState(e, {
-        song: s.song, diffName: diff, diffSuffix: diffSuffix(diff), mod: s.mod,
+        song: s.song, diffName: diff, diffSuffix: diffSuffix(diff), mod: s.mod, seenCutscene: retry,
         onExit: () => { void e.switchState(() => new MenuState(e, 'freeplay')); },
-        onRestart: () => start(),
+        onRestart: () => start(true),
       })).catch(err => { console.error(err); e.toast('No se pudo iniciar: ' + err.message, '#ff7777', 8); e.switchState(new MenuState(e, 'freeplay')); });
     };
     start();
@@ -240,11 +240,11 @@ export class MenuState implements State {
 
 /** Arranca una canción directamente (útil para pruebas y accesos directos). */
 export function startSong(e: Engine, song: string, diffName = 'Hard', mod = '', stage = '') {
-  const start = () => {
+  const start = (retry = false) => {
     void e.switchState(() => new PlayState(e, {
-      song, diffName, diffSuffix: diffSuffix(diffName), mod, stage: stage || undefined,
+      song, diffName, diffSuffix: diffSuffix(diffName), mod, stage: stage || undefined, seenCutscene: retry,
       onExit: () => { void e.switchState(() => new MenuState(e, 'freeplay')); },
-      onRestart: () => start(),
+      onRestart: () => start(true),
     }));
   };
   start();
