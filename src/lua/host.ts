@@ -565,6 +565,24 @@ export class ScriptHost {
     def('setScoreText', (t = '') => { ps.scoreTxt.text = String(t); return true; });
     def('callOnScripts', (fn: string, args: any[] = []) => host.call(fn, Array.isArray(args) ? args : Object.values(args as any)));
     def('loadMultipleFrames', () => undefined);
+    // ---- cámara (Psych 1.0)
+    const gc = () => ps.cams.game;
+    def('setCameraScroll', (x: number, y: number) => { gc().scroll.x = x; gc().scroll.y = y; });
+    def('addCameraScroll', (x = 0, y = 0) => { gc().scroll.x += x; gc().scroll.y += y; });
+    def('getCameraScrollX', () => gc().scroll.x); def('getCameraScrollY', () => gc().scroll.y);
+    def('setCameraFollowPoint', (x: number, y: number) => { ps.camFollow.x = x; ps.camFollow.y = y; ps.isCameraOnForcedPos = true; });
+    def('addCameraFollowPoint', (x = 0, y = 0) => { ps.camFollow.x += x; ps.camFollow.y += y; ps.isCameraOnForcedPos = true; });
+    def('getCameraFollowX', () => ps.camFollow.x); def('getCameraFollowY', () => ps.camFollow.y);
+    def('setSongPosition', (t: number) => { ps.cond.songPosition = t; if (ps.inst) { try { ps.inst.stop(); } catch { /* */ } } });
+    def('luaDebugMode', () => false);
+    def('getFileTranslation', (k: string, d?: string) => d ?? k);
+    // ---- llamadas entre scripts (Lua/HScript)
+    def('callOnScripts', (fn: string, args: any[] = []) => host.call(fn, Array.isArray(args) ? args : Object.values(args ?? {})));
+    def('callOnHScript', (fn: string, args: any[] = []) => { const a = Array.isArray(args) ? args : Object.values(args ?? {}); let r: any; for (const h of host.hxScripts) if (!h.closed) { const v = h.call(fn, a); if (v !== undefined) r = v; } return toLua(r); });
+    def('setOnHScript', (k: string, v: any) => { for (const h of [...host.hxScripts, ...host.scripts.map(x => x.hx).filter(Boolean) as any[]]) if (!h.closed) h.rt.interp.globals.def(String(k), v); });
+    def('getOnHScript', (k: string, f?: string) => { for (const h of [...host.hxScripts, ...host.scripts.map(x => x.hx).filter(Boolean) as any[]]) { if (f && !h.path.toLowerCase().includes(String(f).toLowerCase())) continue; const v = h.rt.interp.globals.get(String(k)); if (v !== undefined) return toLua(v); } return undefined; });
+    def('setOnScripts', (k: string, v: any) => { for (const sc of host.scripts) if (!sc.closed) sc.lua.global.set(k, v); for (const h of host.hxScripts) if (!h.closed) h.rt.interp.globals.def(String(k), v); });
+    def('getOnScripts', (k: string, f?: string) => { for (const sc of host.scripts) { if (sc.closed || (f && !sc.path.toLowerCase().includes(String(f).toLowerCase()))) continue; try { const v = sc.lua.global.get(k); if (v !== undefined && v !== null) return v; } catch { /* */ } } return undefined; });
     def('callOnLuas', (fn: string, args: any[] = []) => { host.call(fn, Array.isArray(args) ? args : Object.values(args ?? {})); });
     def('setOnLuas', (k: string, v: any) => { for (const s of host.scripts) if (!s.closed) s.lua.global.set(k, v); });
     const hxOf = () => { if (!script.hx) script.hx = new HxScript(host, script.path, script.name, script.modFolder); return script.hx; };
