@@ -73,7 +73,8 @@ export async function loadChart(assets: Assets, songFolder: string, difficultySu
   }
   // events.json aparte (editor de charts de Psych)
   const ev = await assets.json<any>(`data/${folder}/events.json`);
-  if (ev?.song?.events) s.events = s.events.concat(ev.song.events);
+  const evl = ev?.song?.events ?? ev?.events;
+  if (Array.isArray(evl)) s.events = s.events.concat(evl);
   s.events.sort((a, b) => a[0] - b[0]);
   return s;
 }

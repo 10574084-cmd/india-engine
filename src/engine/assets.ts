@@ -100,6 +100,12 @@ export class Assets {
 
   /** Atlas animado: Sparrow (.xml), Packer (.txt), TexturePacker (.json) o imagen simple. */
   async atlas(key: string): Promise<Atlas | null> {
+    if (key.includes(',')) {
+      const parts = key.split(',').map(x => x.trim()).filter(Boolean);
+      const list: Atlas[] = [];
+      for (const k of parts) { const at = await this.atlas(k); if (at) list.push(at); }
+      return list.length ? (list.length === 1 ? list[0] : Atlas.merge(list)) : null;
+    }
     const k = key.replace(/\.png$/i, '');
     const png = this.resolve(`images/${k}.png`);
     if (!png) return null;

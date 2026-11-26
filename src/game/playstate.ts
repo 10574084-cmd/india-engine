@@ -32,6 +32,7 @@ export interface PlayOpts {
   mod: string;             // carpeta de mod ('' = juego base)
   stage?: string;          // fuerza un stage (pruebas)
   isStory?: boolean;
+  seenCutscene?: boolean;  // true al reintentar (los mods saltan sus cutscenes)
   onExit: (r: { finished: boolean; score: number }) => void;
   onRestart?: () => void;
 }
@@ -66,6 +67,8 @@ export class PlayState implements State {
   layerFrontMark = 0;
   layerHud: Drawable[] = [];
   layerOther: Drawable[] = [];
+  get variables() { const m = this; return { get: (t: string) => m.luaSprites.get(String(t)) ?? m.luaTexts.get(String(t)) ?? null, exists: (t: string) => m.luaSprites.has(String(t)) || m.luaTexts.has(String(t)) }; }
+  getLuaObject(t: string) { return this.luaSprites.get(String(t)) ?? this.luaTexts.get(String(t)) ?? null; }
   luaSprites = new Map<string, Drawable>();
   luaTexts = new Map<string, TextObj>();
 
@@ -139,6 +142,7 @@ export class PlayState implements State {
   private deadChar: Character | null = null;
   private deadState: 'first' | 'loop' | 'confirm' = 'first';
   private deadCam = new Camera('dead');
+  private deadMark: number[] = [0, 0];
   private deadT = 0;
   private fade = 0;
   private fadeTarget = 0;
@@ -266,7 +270,7 @@ export class PlayState implements State {
     this.progress('Preparando scripts…', 0.65);
     // scripts (Lua): se crean antes de montar el stage para que onCreate pueda añadir sprites
     this.scripts = new ScriptHost(this);
-    await this.scripts.loadAll();
+    await this.scripts.loadAll('stage');
 
     // stage nativo (solo si ningún script lo reemplaza)
     this.progress('Montando escenario…', 0.75);
@@ -277,8 +281,6 @@ export class PlayState implements State {
       await this.stageImpl.create();
       for (const ev of this.eventNotes) await this.stageImpl.eventPushed(ev);
     } else await buildNativeStage(this);
-    this.scripts.call('onLoadStage');
-    for (const ev of this.eventNotes) this.scripts.call('onEventPushed', [ev.event, ev.value1, ev.value2, ev.strumTime]);
 
     // personajes
     this.gf = null;
@@ -296,6 +298,9 @@ export class PlayState implements State {
     this.startCharPos(this.boyfriend);
     this.layerChars.push(this.boyfriend);
     applyStageLayout(this);
+    await this.scripts.loadAll('rest');
+    this.scripts.call('onLoadStage');
+    for (const ev of this.eventNotes) this.scripts.call('onEventPushed', [ev.event, ev.value1, ev.value2, ev.strumTime]);
     if (this.dad.curCharacter.startsWith("gf") && this.gf) { this.dad.x = this.gf.x; this.dad.y = this.gf.y; this.gf.visible = false; }
 
     if (this.gf && gfName === 'pico-speaker') {
@@ -315,6 +320,7 @@ export class PlayState implements State {
     this.recalcRating(false);
     this.updateScoreText();
     if (this.stageImpl) { this.stageImpl.phase = 'post'; await this.stageImpl.createPost(); }
+    (this.cams.game as any).snapToTarget = () => { this.cams.game.scroll.x = this.camFollow.x - W / 2; this.cams.game.scroll.y = this.camFollow.y - H / 2; };
     this.scripts.call('onCreatePost');
     this.progress('¡Listo!', 1);
     this.mode = 'play';
@@ -1237,22 +1243,31 @@ export class PlayState implements State {
 
   private async startGameOver() {
     this.mode = 'dead'; this.deadT = 0; this.deadState = 'first';
+    this.deadMark = [this.layerBack.length, this.layerFront.length];
     this.inst?.stop(); this.vocals?.stop(); this.opponentVocals?.stop();
-    this.scripts.call('onGameOverStart');
     const assets = this.e.assets;
-    const name = this.song.gameOverChar || this.gameOverDefs.char;
+    let name = this.song.gameOverChar || this.gameOverDefs.char;
     try {
       await preloadCharacter(assets, name);
+      // si faltan las imágenes del personaje de muerte, usar el de por defecto
+      const cj = await assets.json<any>(`characters/${name}.json`);
+      const first = String(cj?.image ?? '').split(',')[0].trim();
+      if (first && !assets.exists(`images/${first}.png`)) {
+        this.e.toast(`Faltan imágenes de muerte (${first}); usando bf-dead`, '#ffcc66', 4);
+        name = this.stageImpl && this.isPixelStage ? 'bf-pixel-dead' : 'bf-dead'; await preloadCharacter(assets, name);
+      }
       const bf = this.boyfriend;
       const c = new Character(bf.x - bf.positionArray[0], bf.y - bf.positionArray[1], name, true, assets);
       c.x += c.positionArray[0]; c.y += c.positionArray[1];
       this.deadChar = c; c.playAnim('firstDeath', true);
       this.deadCam.zoom = this.cams.game.zoom; this.deadCam.scroll.x = this.cams.game.scroll.x; this.deadCam.scroll.y = this.cams.game.scroll.y;
-    } catch { this.deadChar = null; }
+    } catch (err) { console.error('[GameOver] no se pudo crear el personaje de muerte', name, err); this.deadChar = null; }
+    this.scripts.call('onGameOverStart');
     this.e.audio.playSound(await assets.sound(this.song.gameOverSound || this.gameOverDefs.sound), 1);
   }
   private updateDead(dt: number) {
     this.deadT += dt;
+    this.scripts.call('onUpdate', [dt]);
     const c = this.deadChar, inp = this.e.input;
     c?.update(dt);
     if (c && this.deadState === 'first') {
@@ -1401,6 +1416,10 @@ export class PlayState implements State {
       this.deadCam.begin(ctx);
       this.deadChar?.draw(ctx, this.deadCam);
       this.deadCam.end(ctx);
+      const dm = this.deadMark;
+      this.deadCam.begin(ctx);
+      for (const l of [this.layerBack, this.layerFront]) l.forEach((o, i) => { if (i >= (l === this.layerBack ? dm[0] : dm[1]) && o.camera === 'game') o.draw(ctx, this.deadCam); });
+      this.deadCam.end(ctx);
       const oc = this.cams.other; oc.begin(ctx);
       for (const l of [this.layerBack, this.layerFront, this.layerHud, this.layerOther]) for (const o of l) if (o.camera === 'other') o.draw(ctx, oc);
       oc.end(ctx);
@@ -1450,6 +1469,7 @@ export class PlayState implements State {
 
 
   private drawNotes(ctx: CanvasRenderingContext2D, cam: Camera) {
+    if (!this.startedCountdown) return;
     // colas primero (detrás de las cabezas)
     for (const n of this.notes) {
       if (!n.hasSustain || !n.atlas) continue;

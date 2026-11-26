@@ -235,7 +235,7 @@ class Parser {
       params.push({ name: pn, def, rest }); if (!this.eatOp(',')) break;
     }
     this.expectOp(')'); this.skipType();
-    const body = this.isOp('{') ? this.block() : (() => { const e = this.expr(); this.eatOp(';'); return { k: 'return', v: e }; })();
+    const body = this.isOp('{') ? this.block() : (this.cur.t === 'id' && ['return', 'if', 'for', 'while', 'switch', 'try', 'var', 'do'].includes(this.cur.v as string) ? (this.statement() as Node) : (() => { const e = this.expr(); this.eatOp(';'); return { k: 'return', v: e }; })());
     return { k: 'func', name, params, body };
   }
 

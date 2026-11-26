@@ -18,6 +18,9 @@ env:
   # Release del repo que contiene el zip del juego base
   ASSETS_RELEASE_TAG: Claude
   ASSETS_ZIP: FNF-PsychEngine-0.7.3.zip
+  # Mod que se incluye en el juego base (Pico Mix)
+  PICO_RELEASE_TAG: ClaudeAi
+  PICO_ZIP: pico_mix_psych_port.zip
 
 jobs:
   build:
@@ -33,8 +36,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$ASSETS_RELEASE_TAG" --pattern "$ASSETS_ZIP" --dir "$RUNNER_TEMP"
-      - name: Extraer assets a public/
-        run: npm run extract -- "$RUNNER_TEMP/$ASSETS_ZIP"
+      - name: Descargar Pico Mix desde la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$PICO_RELEASE_TAG" --pattern "$PICO_ZIP" --dir "$RUNNER_TEMP"
+      - name: Extraer assets y mods a public/
+        run: npm run extract -- "$RUNNER_TEMP/$ASSETS_ZIP" --mod "$RUNNER_TEMP/$PICO_ZIP"
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

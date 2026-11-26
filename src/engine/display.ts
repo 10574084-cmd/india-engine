@@ -1,3 +1,4 @@
+import { fxFrame, type ShaderFx } from './shaderfx';
 /**
  * Objetos de pantalla: atlas Sparrow, sprites animados, texto y cámaras.
  * Imita el modelo de HaxeFlixel (x/y, offset, origin, scale, scrollFactor) porque los
@@ -14,6 +15,7 @@ export interface Frame {
   x: number; y: number; w: number; h: number;       // región en la imagen
   fx: number; fy: number;                            // frameX/frameY del XML (<= 0 normalmente)
   fw: number; fh: number;                            // tamaño original sin recortar
+  img?: Src;                                         // imagen propia (atlas combinados)
   rotated?: boolean;
 }
 
@@ -28,6 +30,12 @@ export class Atlas {
   get width() { return (this.img as any).width as number; }
   get height() { return (this.img as any).height as number; }
 
+  /** combina varias hojas (character.image = "a, b, c") */
+  static merge(list: Atlas[]): Atlas {
+    const out = new Atlas(list[0].img);
+    list.forEach((a, i) => { for (const f of a.frames) out.frames.push(i === 0 ? f : { ...f, img: a.img }); });
+    return out;
+  }
   static single(img: Src): Atlas {
     const a = new Atlas(img);
     const w = (img as any).width, h = (img as any).height;
@@ -253,6 +261,7 @@ export class Sprite implements Drawable {
   staticFrame = 0;
   /** override del atlas dibujado (p.ej. nota recoloreada) */
   srcOverride: Src | null = null;
+  fx: ShaderFx | null = null;
   tag = '';
 
   constructor(x = 0, y = 0) { this.x = x; this.y = y; }
@@ -333,7 +342,9 @@ export class Sprite implements Drawable {
         return { get name() { return s.cur!.name; }, get finished() { return s.finished; },
           get curFrame() { return s.curFrame; }, set curFrame(v: number) { s.curFrame = v; s.syncFrame(); },
           get paused() { return s.paused; }, set paused(v: boolean) { s.paused = v; },
-          get frames() { return s.cur!.frames; }, get looped() { return s.cur!.loop; } };
+          get frames() { return s.cur!.frames; }, get looped() { return s.cur!.loop; },
+          get numFrames() { return s.cur!.frames.length; }, get frameRate() { return s.cur!.fps; }, set frameRate(v: number) { s.cur!.fps = v; },
+          finish() { s.curFrame = Math.max(0, s.cur!.frames.length - 1); s.syncFrame(); } };
       },
       get frameIndex() { return s.curFrame; }, set frameIndex(v: number) { s.staticFrame = v; s.curFrame = v; s.syncFrame(); },
       add: (name: string, frames: number[], fps = 30, loop = true) => s.addByFrames(name, frames, fps, loop),
@@ -415,6 +426,7 @@ export class Sprite implements Drawable {
     }
   }
 
+  getScreenPosition(cam?: Camera) { return { x: this.x - (cam?.scroll.x ?? 0) * this.scrollFactor.x, y: this.y - (cam?.scroll.y ?? 0) * this.scrollFactor.y }; }
   draw(ctx: CanvasRenderingContext2D, cam: Camera) {
     if (!this.visible || this.alpha <= 0 || !this.atlas) return;
     const f = this.currentFrame();
@@ -428,8 +440,9 @@ export class Sprite implements Drawable {
     ctx.translate(px + this.origin.x, py + this.origin.y);
     if (this.angle) ctx.rotate(this.angle * Math.PI / 180);
     ctx.scale(this.scale.x * (this.flipX ? -1 : 1), this.scale.y * (this.flipY ? -1 : 1));
-    const src = this.srcOverride ?? this.atlas.tinted(this.color);
-    ctx.drawImage(src as any, f.x, f.y, f.w, f.h, -this.origin.x - f.fx, -this.origin.y - f.fy, f.w, f.h);
+    const src = f.img ?? this.srcOverride ?? this.atlas.tinted(this.color);
+    if (this.fx) ctx.drawImage(fxFrame(this.fx, src as any, f.x, f.y, f.w, f.h), -this.origin.x - f.fx, -this.origin.y - f.fy);
+    else ctx.drawImage(src as any, f.x, f.y, f.w, f.h, -this.origin.x - f.fx, -this.origin.y - f.fy, f.w, f.h);
     ctx.restore();
   }
 }
@@ -497,7 +510,19 @@ export class TextObj implements Drawable {
     ctx.textAlign = this.align;
     ctx.lineJoin = 'round';
     const ax = this.align === 'center' ? fw / 2 : this.align === 'right' ? fw : 0;
-    const lines = this.text.split('\n');
+    let lines = this.text.split('\n');
+    if (this.fieldWidth > 0) {
+      const out: string[] = [];
+      for (const para of lines) {
+        let cur = '';
+        for (const w of para.split(' ')) {
+          const t = cur ? cur + ' ' + w : w;
+          if (cur && ctx.measureText(t).width > this.fieldWidth) { out.push(cur); cur = w; } else cur = t;
+        }
+        out.push(cur);
+      }
+      lines = out;
+    }
     lines.forEach((ln, i) => {
       const ly = i * this.size * this.lineHeight;
       if (this.borderSize > 0) {
