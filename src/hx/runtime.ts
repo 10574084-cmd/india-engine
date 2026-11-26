@@ -1,4 +1,4 @@
-import { Interp, Env, HxHooks, HxMap, HxError, parseHx, makeIter, str } from './interp';
+import { Interp, Env, HxHooks, HxMap, HxError, parseHx, makeIter, str, HxReg } from './interp';
 import { Atlas, Camera, Drawable, Sprite, TextObj, W, H } from '../engine/display';
 import { ease } from '../engine/tween';
 import type { PlayState } from '../game/playstate';
@@ -190,6 +190,7 @@ export class HxRuntime implements HxHooks {
         } };
         return { found: true, value: obj };
       }
+      case 'EReg': return { found: true, value: new HxReg(String(args[0] ?? ''), String(args[1] ?? '')) };
       case 'FlxTimer': return { found: true, value: new HxTimer(this) };
       case 'FlxPoint': return { found: true, value: { x: Number(args[0] ?? 0), y: Number(args[1] ?? 0) } };
       case 'StringBuf': { let s = ''; return { found: true, value: { add: (x: any) => { s += str(x); }, toString: () => s, get length() { return s.length; } } }; }
@@ -302,9 +303,38 @@ export class HxRuntime implements HxHooks {
     const Std = {
       int: (x: any) => Math.trunc(Number(x)), string: (x: any) => str(x),
       parseInt: (s: string) => { const n = parseInt(s); return isNaN(n) ? null : n; }, parseFloat: (s: string) => parseFloat(s),
-      random: (n: number) => Math.floor(Math.random() * n), isOfType: (v: any, t: any) => typeof t === 'function' && v instanceof t,
+      random: (n: number) => Math.floor(Math.random() * n), isOfType: (v: any, t: any) => isOfType(v, t), is: (v: any, t: any) => isOfType(v, t),
+      downcast: (v: any, t: any) => isOfType(v, t) ? v : null, instance: (v: any, t: any) => isOfType(v, t) ? v : null,
+    };
+    const TString: any = Object.assign(function (x: any) { return str(x); }, { fromCharCode: (c: number) => String.fromCharCode(c), __t: 'String' });
+    const TInt = { __t: 'Int' }, TFloat = { __t: 'Float' }, TBool = { __t: 'Bool' }, TDynamic = { __t: 'Dynamic' }, TArray = { __t: 'Array' };
+    const isOfType = (v: any, t: any): boolean => {
+      if (t === TString) return typeof v === 'string'; if (t === TInt) return typeof v === 'number' && Number.isInteger(v);
+      if (t === TFloat) return typeof v === 'number'; if (t === TBool) return typeof v === 'boolean'; if (t === TArray) return Array.isArray(v);
+      if (t === TDynamic) return true; if (t && t.__hxclass) return !!v && typeof v === 'object' && (v.__classes ?? []).includes(t);
+      return typeof t === 'function' && v instanceof t;
+    };
+    const Type = {
+      getClassName: (o: any) => o?.__hxclass ? o.__name : o?.__classes ? o.__classes[o.__classes.length - 1].__name : (o?.constructor?.name ?? null),
+      getClass: (o: any) => o?.__classes ? o.__classes[o.__classes.length - 1] : (o?.constructor ?? null),
+      typeof: (o: any) => o === null ? 'TNull' : typeof o === 'number' ? (Number.isInteger(o) ? 'TInt' : 'TFloat') : typeof o === 'boolean' ? 'TBool' : typeof o === 'function' ? 'TFunction' : 'TObject',
+      getEnumName: (e: any) => e?.__enum ?? null, enumConstructor: (e: any) => e?.name ?? null, enumParameters: (e: any) => e?.params ?? [],
+      enumIndex: (e: any) => 0, getInstanceFields: (c: any) => (c?.__members ?? []).filter((m: any) => !m.isStatic).map((m: any) => m.name),
+      resolveClass: (_n: string) => null, createInstance: (c: any, a: any[]) => c?.__new ? c.__new(a) : new c(...a), createEmptyInstance: (c: any) => c?.__new ? c.__new([]) : new c(),
+      getSuperClass: (c: any) => c?.__parent ?? null,
+    };
+    const Lambda = {
+      array: (it: any) => Array.from(it ?? []), count: (it: any, f?: (x: any) => boolean) => { let n = 0; for (const x of it) if (!f || f(x)) n++; return n; },
+      exists: (it: any, f: (x: any) => boolean) => { for (const x of it) if (f(x)) return true; return false; },
+      foreach: (it: any, f: (x: any) => boolean) => { for (const x of it) if (!f(x)) return false; return true; },
+      map: (it: any, f: (x: any) => any) => Array.from(it, f), filter: (it: any, f: (x: any) => boolean) => Array.from(it).filter(f),
+      fold: (it: any, f: (x: any, a: any) => any, init: any) => { let a = init; for (const x of it) a = f(x, a); return a; },
+      find: (it: any, f: (x: any) => boolean) => { for (const x of it) if (f(x)) return x; return null; },
+      iter: (it: any, f: (x: any) => void) => { for (const x of it) f(x); }, empty: (it: any) => !Array.from(it).length, has: (it: any, v: any) => Array.from(it).includes(v), indexOf: (it: any, v: any) => Array.from(it).indexOf(v),
     };
     const StringTools = {
+      isSpace: (s: string, p: number) => /\s/.test(s.charAt(p)), urlEncode: (s: string) => encodeURIComponent(s), urlDecode: (s: string) => decodeURIComponent(s), htmlEscape: (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+      fastCodeAt: (s: string, i: number) => s.charCodeAt(i), unsafeCodeAt: (s: string, i: number) => s.charCodeAt(i), isEof: (c: number) => c !== c,
       trim: (s: string) => s.trim(), ltrim: (s: string) => s.trimStart(), rtrim: (s: string) => s.trimEnd(),
       startsWith: (s: string, p: string) => s.startsWith(p), endsWith: (s: string, p: string) => s.endsWith(p), contains: (s: string, p: string) => s.includes(p),
       replace: (s: string, a: string, b: string) => s.split(a).join(b), hex: (n: number, d = 0) => n.toString(16).toUpperCase().padStart(d, '0'),
@@ -332,6 +362,7 @@ export class HxRuntime implements HxHooks {
     };
     const FlxAngle = { asRadians: (d: number) => d * Math.PI / 180, asDegrees: (r: number) => r * 180 / Math.PI, TO_RAD: Math.PI / 180, TO_DEG: 180 / Math.PI };
     return {
+      String: TString, Int: TInt, Float: TFloat, Bool: TBool, Dynamic: TDynamic, Array: TArray, Type, Lambda,
       FlxG, FlxTween, FlxEase: easeProxy, FlxColor, Paths, Math: jsMath, FlxMath, Std, StringTools, Reflect, Json, BlendMode, Conductor, ClientPrefs,
       PlayState: PlayStateCls, CoolUtil, FlxAngle, FlxSprite: Sprite, FlxText: TextObj, FlxCamera: Camera, Sprite, Map: HxMap, Sys: { time: () => performance.now() / 1000 },
       FlxTextBorderStyle: { NONE: 0, SHADOW: 1, OUTLINE: 2, OUTLINE_FAST: 3 }, FlxTextAlign: { LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFY: 'left' },

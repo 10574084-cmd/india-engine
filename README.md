@@ -80,3 +80,9 @@ Para que corra tal cual en Psych 1.0 se añadió:
 - **HScript**: funciones sin llaves, `getLuaObject`, `game.variables`, `SpectralAnalyzer` (audio real vía AnalyserNode), `FlxG.sound.load`, `FlxG.android/touches/onMobile`.
 - **Game Over**: `onGameOverStart` corre cuando ya existe el personaje de muerte, `onUpdate` durante la muerte, y sprites de la cámara de juego añadidos al morir se dibujan. Si faltan las imágenes de muerte del mod se usa `bf-dead`.
 Limitaciones: shaders `dropShadow`/`textureSwap`/`rain` no se renderizan, y el personaje `pico-holding-nene-dead` (Animate como personaje) aún no.
+
+## Más compatibilidad HScript / Lua
+
+**HScript**: `class` (extends, static, propiedades get/set, `super`), `enum` (simples, con parámetros y `enum abstract`; los constructores también se pueden usar sin prefijo), `typedef`/`interface`/`abstract` (ignorados), `switch` con patrones (`case Run(s) if (s > 5)`, `a | b`, arrays, objetos), `switch` como expresión, literales regex `~/…/flags` (`EReg`), funciones sin llaves, `Std.isOfType`, `Type.*`, `Lambda.*` y más `StringTools`.
+
+**Lua**: `setCameraScroll`, `addCameraScroll`, `getCameraScrollX/Y`, `setCameraFollowPoint`, `addCameraFollowPoint`, `getCameraFollowX/Y`, `setSongPosition`, `luaDebugMode`, `getFileTranslation`, `callOnScripts`, `callOnHScript`, `setOnHScript`, `getOnHScript`, `setOnScripts`, `getOnScripts`.

@@ -43,7 +43,7 @@ export function preprocess(src: string): string {
 }
 
 // ============================================================================ lexer
-type Tok = { t: 'num' | 'str' | 'istr' | 'id' | 'op' | 'eof'; v: any; line: number; pos: number };
+type Tok = { t: 'num' | 'str' | 'istr' | 'id' | 'op' | 'eof' | 'regex'; v: any; line: number; pos: number; flags?: string };
 const OPS = ['>>>=', '<<=', '>>=', '...', '??=', '==', '!=', '<=', '>=', '&&', '||', '??', '?.', '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<', '=>', '->'];
 
 function lex(src: string): Tok[] {
@@ -62,6 +62,12 @@ function lex(src: string): Tok[] {
       while (i < n && /[\w.]/.test(src[i])) i++;
       if (src[i] === '(') { let d = 0; do { if (src[i] === '(') d++; else if (src[i] === ')') d--; i++; } while (i < n && d > 0); }
       continue;
+    }
+    if (c === '~' && src[i + 1] === '/') { // literal de expresión regular ~/patrón/flags
+      let j = i + 2, body = '';
+      while (j < n && src[j] !== '/') { if (src[j] === '\\') { body += src[j] + (src[j + 1] ?? ''); j += 2; } else body += src[j++]; }
+      j++; let fl = ''; while (/[a-z]/.test(src[j] ?? '')) fl += src[j++];
+      toks.push({ t: 'regex', v: body, line, pos: i, flags: fl }); i = j; continue;
     }
     const start = i;
     if (/[0-9]/.test(c) || (c === '.' && /[0-9]/.test(src[i + 1] ?? ''))) {
@@ -200,8 +206,9 @@ class Parser {
           return { k: 'try', body, catches, line };
         }
         case 'switch': return this.switchStmt();
-        case 'class': case 'typedef': case 'enum': case 'interface': case 'abstract':
-          throw new HxError(`"${t.v}" no está soportado en scripts de India Engine`, line);
+        case 'class': return this.classDecl();
+        case 'enum': return this.enumDecl();
+        case 'typedef': case 'interface': case 'abstract': this.skipDecl(); return null;
       }
     }
     const e = this.expr(); this.eatOp(';');
@@ -212,17 +219,87 @@ class Parser {
     const line = this.cur.line; this.p++;
     const hasParen = this.eatOp('('); const subject = this.expr(); if (hasParen) this.expectOp(')');
     this.expectOp('{');
-    const cases: { pats: Node[] | null; body: Node[] }[] = [];
+    const flat = (n: Node): Node[] => n.k === 'bin' && n.op === '|' ? [...flat(n.l), ...flat(n.r)] : [n];
+    const cases: { pats: Node[] | null; guard: Node | null; body: Node[] }[] = [];
     while (!this.isOp('}')) {
-      let pats: Node[] | null = null;
+      let pats: Node[] | null = null, guard: Node | null = null;
       if (this.eatId('default')) { this.expectOp(':'); }
-      else if (this.eatId('case')) { pats = []; do { pats.push(this.expr()); } while (this.eatOp(',') || this.eatOp('|')); this.expectOp(':'); }
+      else if (this.eatId('case')) {
+        pats = [];
+        do { pats.push(...flat(this.expr())); } while (this.eatOp(','));
+        if (this.eatId('if')) { const paren = this.eatOp('('); guard = this.expr(); if (paren) this.expectOp(')'); }
+        this.expectOp(':');
+      }
       else throw new HxError('se esperaba case/default', this.cur.line);
       const body: Node[] = [];
-      while (!this.isOp('}') && !this.isId('case') && !this.isId('default')) { const s = this.statement(); if (s) body.push(s); }
-      cases.push({ pats, body });
+      while (!this.isOp('}') && !this.isId('case') && !this.isId('default')) { const st = this.statement(); if (st) body.push(st); }
+      cases.push({ pats, guard, body });
     }
     this.p++; return { k: 'switch', subject, cases, line };
+  }
+
+  /** salta un typedef/interface/abstract completo */
+  private skipDecl() {
+    this.p++;
+    while (this.cur.t !== 'eof' && !this.isOp('{') && !this.isOp(';')) this.p++;
+    if (this.eatOp(';')) return;
+    let d = 0;
+    do { if (this.isOp('{')) d++; else if (this.isOp('}')) d--; this.p++; } while (d > 0 && this.cur.t !== 'eof');
+    this.eatOp(';');
+  }
+  private skipBalanced(open: string, close: string) {
+    if (!this.isOp(open)) return; let d = 0;
+    do { if (this.isOp(open)) d++; else if (this.isOp(close)) d--; this.p++; } while (d > 0 && this.cur.t !== 'eof');
+  }
+  private dotted(): string { let n = this.ident(); while (this.eatOp('.')) n += '.' + this.ident(); if (this.isOp('<')) { this.p++; let d = 1; while (d > 0 && this.cur.t !== 'eof') { if (this.isOp('<')) d++; else if (this.isOp('>')) d--; this.p++; } } return n; }
+
+  private enumDecl(): Node {
+    const line = this.cur.line; this.p++;
+    if (this.eatId('abstract')) {
+      const name = this.ident(); this.skipBalanced('(', ')');
+      while (this.cur.t === 'id' && (this.cur.v === 'from' || this.cur.v === 'to')) { this.p++; this.typeExpr(); }
+      this.expectOp('{'); const vals: [string, Node | null][] = [];
+      while (!this.isOp('}') && this.cur.t !== 'eof') {
+        while (this.cur.t === 'id' && ['public', 'inline', 'static', 'final'].includes(this.cur.v)) this.p++;
+        if (this.eatId('var')) { const vn = this.ident(); this.skipType(); let init: Node | null = null; if (this.eatOp('=')) init = this.expr(); this.eatOp(';'); vals.push([vn, init]); }
+        else if (this.isId('function')) { this.p++; this.ident(); this.funcRest(null); }
+        else this.p++;
+      }
+      this.p++; return { k: 'enumabs', name, vals, line };
+    }
+    const name = this.ident(); if (this.isOp('<')) { this.p++; let d = 1; while (d > 0 && this.cur.t !== 'eof') { if (this.isOp('<')) d++; else if (this.isOp('>')) d--; this.p++; } }
+    this.expectOp('{'); const ctors: { name: string; params: string[] }[] = [];
+    while (!this.isOp('}') && this.cur.t !== 'eof') {
+      const cn = this.ident(); const params: string[] = [];
+      if (this.eatOp('(')) { while (!this.isOp(')')) { this.eatOp('?'); params.push(this.ident()); this.skipType(); if (!this.eatOp(',')) break; } this.expectOp(')'); }
+      this.skipType(); this.eatOp(';'); ctors.push({ name: cn, params });
+    }
+    this.p++; return { k: 'enumdecl', name, ctors, line };
+  }
+
+  private classDecl(): Node {
+    const line = this.cur.line; this.p++;
+    const name = this.ident(); if (this.isOp('<')) { this.p++; let d = 1; while (d > 0 && this.cur.t !== 'eof') { if (this.isOp('<')) d++; else if (this.isOp('>')) d--; this.p++; } }
+    let parent: string | null = null;
+    while (this.cur.t === 'id' && (this.cur.v === 'extends' || this.cur.v === 'implements')) { const kw = this.cur.v; this.p++; const t = this.dotted(); if (kw === 'extends') parent = t; }
+    this.expectOp('{');
+    const members: { kind: 'var' | 'fn'; name: string; isStatic: boolean; init?: Node | null; fn?: Node; acc?: string[] }[] = [];
+    while (!this.isOp('}') && this.cur.t !== 'eof') {
+      let isStatic = false;
+      while (this.cur.t === 'id' && (['public', 'private', 'static', 'inline', 'override', 'dynamic', 'extern'].includes(this.cur.v) || (this.cur.v === 'final' && this.peek().t === 'id' && this.peek().v === 'function'))) {
+        if (this.cur.v === 'static') isStatic = true; this.p++;
+      }
+      if (this.eatId('var') || this.eatId('final')) {
+        const vn = this.ident(); let acc: string[] | undefined;
+        if (this.eatOp('(')) { acc = []; while (!this.isOp(')')) { acc.push(String(this.cur.v)); this.p++; this.eatOp(','); } this.expectOp(')'); }
+        this.skipType(); let init: Node | null = null; if (this.eatOp('=')) init = this.expr(); this.eatOp(';');
+        members.push({ kind: 'var', name: vn, isStatic, init, acc });
+      } else if (this.eatId('function')) {
+        const fname = this.cur.t === 'id' ? this.ident() : 'new'; const fn = this.funcRest(fname);
+        members.push({ kind: 'fn', name: fname, isStatic, fn });
+      } else this.p++;
+    }
+    this.p++; return { k: 'classdecl', name, parent, members, line };
   }
 
   private funcRest(name: string | null): Node {
@@ -338,6 +415,7 @@ class Parser {
     switch (t.t) {
       case 'num': this.p++; return { k: 'lit', v: t.v };
       case 'str': this.p++; return { k: 'lit', v: t.v };
+      case 'regex': this.p++; return { k: 'regex', src: t.v, flags: t.flags ?? '' };
       case 'istr': {
         this.p++;
         const parts = (t.v as (string | { src: string; line: number })[]).map(p => typeof p === 'string' ? p : new Parser(lex(p.src)).expr());
@@ -349,6 +427,7 @@ class Parser {
           case 'false': this.p++; return { k: 'lit', v: false };
           case 'null': this.p++; return { k: 'lit', v: null };
           case 'this': this.p++; return { k: 'id', name: 'this', line };
+          case 'switch': return this.switchStmt();
           case 'function': { this.p++; const name = this.cur.t === 'id' ? this.ident() : null; return this.funcRest(name); }
           case 'new': {
             this.p++; let cls = this.ident(); while (this.eatOp('.')) cls += '.' + this.ident();
@@ -429,6 +508,26 @@ export class Env {
   def(n: string, v: any) { this.vars.set(n, v); }
 }
 
+/** Entorno cuyas variables son los campos de un objeto (métodos de clases de Haxe). */
+export class ObjEnv extends Env {
+  constructor(parent: Env | null, public obj: any) {
+    super(parent);
+    const o = obj;
+    (this as any).vars = { has: (n: string) => n in o, get: (n: string) => o[n], set: (n: string, v: any) => { o[n] = v; return true; } };
+  }
+}
+
+export class HxReg {
+  r: RegExp; private m: RegExpExecArray | null = null; private src = '';
+  constructor(pat: string, flags = '') { this.r = new RegExp(pat, flags.replace(/[^gimsuy]/g, '')); }
+  match(s: string) { this.src = s; this.r.lastIndex = 0; this.m = this.r.exec(s); return this.m !== null; }
+  matched(i = 0) { return this.m ? (this.m[i] ?? null) : null; }
+  matchedLeft() { return this.m ? this.src.slice(0, this.m.index) : null; }
+  matchedRight() { return this.m ? this.src.slice(this.m.index + this.m[0].length) : null; }
+  replace(s: string, by: string) { return s.replace(new RegExp(this.r.source, this.r.flags.replace('g', '')), by); }
+  split(s: string) { return s.split(new RegExp(this.r.source, this.r.flags)); }
+}
+
 /** Mapa de Haxe (Map<K,V>) */
 export class HxMap {
   m = new Map<any, any>();
@@ -489,9 +588,10 @@ export class Interp {
   run(prog: Node[], env: Env = this.globals): any {
     // las funciones se elevan (hoisting) para poder llamarse antes de su declaración
     for (const s of prog) if (s.k === 'fundecl') env.def(s.name, this.makeFunc(s.fn, env));
+    for (const s of prog) if (s.k === 'enumdecl' || s.k === 'enumabs' || s.k === 'classdecl') this.exec(s, env);
     let last: any;
     try {
-      for (const s of prog) { if (s.k === 'fundecl') continue; last = this.exec(s, env); }
+      for (const s of prog) { if (s.k === 'fundecl' || s.k === 'enumdecl' || s.k === 'enumabs' || s.k === 'classdecl') continue; last = this.exec(s, env); }
     } catch (e) { if (e instanceof Return) return e.v; throw e; }
     return last;
   }
@@ -502,6 +602,63 @@ export class Interp {
     return f(...args);
   }
   has(name: string) { return typeof this.globals.get(name) === 'function'; }
+
+  private matchPat(p: Node, v: any, sc: Env): boolean {
+    const isEnum = (x: any) => x !== null && typeof x === 'object' && x.__enum !== undefined;
+    switch (p.k) {
+      case 'id': {
+        if (p.name === '_') return true;
+        if (/^[A-Z]/.test(p.name)) {
+          if (isEnum(v) && v.name === p.name) return true;
+          const o = this.getVarOpt(p.name, sc); return o !== undefined && o === v;
+        }
+        sc.def(p.name, v); return true;
+      }
+      case 'call': {
+        const f = p.f; const cname = f.k === 'id' ? f.name : f.k === 'field' ? f.name : null;
+        if (!cname || !isEnum(v) || v.name !== cname) return false;
+        return p.args.every((a: Node, i: number) => this.matchPat(a, v.params[i], sc));
+      }
+      case 'arr': return Array.isArray(v) && v.length === p.items.length && p.items.every((it: Node, i: number) => this.matchPat(it, v[i], sc));
+      case 'obj': return v !== null && typeof v === 'object' && p.fields.every(([k, vn]: [string, Node]) => this.matchPat(vn, v[k], sc));
+      case 'field': { const e = this.ev(p, sc); return e === v || (isEnum(e) && isEnum(v) && e.__enum === v.__enum && e.name === v.name && e.params.length === 0); }
+    }
+    const e = this.ev(p, sc); return e === v || (e == null && v == null);
+  }
+
+  private makeClass(n: Node, env: Env): any {
+    const parentName = n.parent ? String(n.parent).split('.').pop()! : null;
+    const parentCls = parentName ? this.getVarOpt(parentName, env) : null;
+    const cls: any = { __hxclass: true, __name: n.name, __parent: parentCls && parentCls.__hxclass ? parentCls : null };
+    const senv = new ObjEnv(env, cls); cls.__senv = senv; cls.__members = n.members;
+    for (const m of n.members) if (m.isStatic && m.kind === 'fn') cls[m.name] = this.makeFunc(m.fn, senv);
+    for (const m of n.members) if (m.isStatic && m.kind === 'var') cls[m.name] = m.init ? this.ev(m.init, senv) : null;
+    cls.__new = (args: any[]) => {
+      const obj: any = {}; const classes: any[] = []; const layers: any[] = [];
+      const build = (c: any): any => {
+        const parentLayer = c.__parent ? build(c.__parent) : {};
+        classes.push(c);
+        const ienv = new ObjEnv(c.__senv, obj);
+        const lenv = new Env(ienv); lenv.def('this', obj); lenv.def('super', parentLayer);
+        const layer: any = {};
+        for (const m of c.__members) if (!m.isStatic && m.kind === 'fn') layer[m.name] = this.makeFunc(m.fn, lenv);
+        for (const k of Object.keys(layer)) if (k !== 'new') obj[k] = layer[k];
+        for (const m of c.__members) if (!m.isStatic && m.kind === 'var') {
+          if (m.acc && (m.acc[0] === 'get' || m.acc[1] === 'set')) {
+            const g = layer['get_' + m.name], st = layer['set_' + m.name];
+            Object.defineProperty(obj, m.name, { configurable: true, enumerable: true, get: m.acc[0] === 'get' && g ? () => g() : () => null, set: m.acc[1] === 'set' && st ? (v: any) => { st(v); } : () => { } });
+          } else obj[m.name] = m.init ? this.ev(m.init, lenv) : null;
+        }
+        layers.push(layer);
+        return layer;
+      };
+      build(cls);
+      obj.__classes = classes;
+      for (let i = layers.length - 1; i >= 0; i--) if (layers[i].new) { layers[i].new(...args); break; }
+      return obj;
+    };
+    return cls;
+  }
 
   private makeFunc(fn: Node, env: Env): (...a: any[]) => any {
     const self = this;
@@ -561,17 +718,43 @@ export class Interp {
           return this.exec(c.body, local);
         }
       }
+      case 'enumdecl': {
+        const E: any = { __enumType: n.name };
+        for (const c of n.ctors) {
+          if (c.params.length === 0) E[c.name] = { __enum: n.name, name: c.name, params: [] };
+          else E[c.name] = (...a: any[]) => ({ __enum: n.name, name: c.name, params: a });
+        }
+        E.createAll = () => n.ctors.filter((c: any) => !c.params.length).map((c: any) => E[c.name]);
+        env.def(n.name, E);
+        // Haxe infiere el enum por tipo esperado: permite usar el constructor sin prefijo
+        for (const c of n.ctors) if (!env.has(c.name)) env.def(c.name, E[c.name]);
+        return undefined;
+      }
+      case 'enumabs': {
+        const E: any = {}; let auto = 0;
+        for (const [name, init] of n.vals) { const v = init ? this.ev(init, env) : auto; E[name] = v; if (typeof v === 'number') auto = v + 1; }
+        env.def(n.name, E); return undefined;
+      }
+      case 'classdecl': env.def(n.name, this.makeClass(n, env)); return undefined;
       case 'switch': {
         const v = this.ev(n.subject, env);
-        let matched = false;
+        let def: any = null, hit: any = null, scope: Env | null = null;
         for (const c of n.cases) {
-          if (!matched) {
-            if (c.pats === null) matched = true;
-            else for (const p of c.pats) { const pv = p.k === 'id' && p.name === '_' ? v : this.ev(p, env); if (pv === v) { matched = true; break; } }
+          if (c.pats === null) { def = c; continue; }
+          for (const p of c.pats) {
+            const sc = new Env(env);
+            if (this.matchPat(p, v, sc) && (!c.guard || truthy(this.ev(c.guard, sc)))) { hit = c; scope = sc; break; }
           }
-          if (matched) { const local = new Env(env); try { for (const s of c.body) this.exec(s, local); } catch (e) { if (e instanceof Break) return undefined; throw e; } if (c.body.length) return undefined; }
+          if (hit) break;
         }
-        return undefined;
+        if (!hit) { hit = def; scope = new Env(env); }
+        if (!hit) return undefined;
+        // un case vacío cae al siguiente (case 1: case 2: ...)
+        let idx = n.cases.indexOf(hit);
+        while (idx < n.cases.length - 1 && n.cases[idx].body.length === 0) idx++;
+        let last: any;
+        try { for (const st of n.cases[idx].body) last = this.exec(st, scope!); } catch (e) { if (e instanceof Break) return undefined; throw e; }
+        return last;
       }
       case 'return_': return undefined;
     }
@@ -597,6 +780,8 @@ export class Interp {
   ev(n: Node, env: Env): any {
     switch (n.k) {
       case 'lit': return n.v;
+      case 'regex': return new HxReg(n.src, n.flags);
+      case 'switch': return this.exec(n, env);
       case 'paren': return this.ev(n.e, env);
       case 'interp': return n.parts.map((p: any) => typeof p === 'string' ? p : str(this.ev(p, env))).join('');
       case 'id': return this.getVar(n.name, env, n.line);
@@ -651,6 +836,7 @@ export class Interp {
         const r = this.hooks.construct(n.cls, args);
         if (r.found) return r.value;
         const cls = this.getVarOpt(n.cls, env);
+        if (cls && cls.__hxclass) return cls.__new(args);
         if (typeof cls === 'function') { try { return new (cls as any)(...args); } catch { return (cls as any)(...args); } }
         throw new HxError(`clase desconocida: ${n.cls}`, n.line);
       }
@@ -726,7 +912,7 @@ export class Interp {
       if (o === null || o === undefined) { if (f.safe) return null; throw new HxError(`no se puede llamar "${f.name}" sobre null`, n.line); }
       return this.callMethod(o, f.name, args, n.line);
     }
-    if (f.k === 'id' && f.name === 'super') return null;
+    if (f.k === 'id' && f.name === 'super') { const sp = this.getVarOpt('super', env); const c = sp && sp.new; if (typeof c === 'function') c(...args); return null; }
     const fn = this.ev(f, env);
     if (typeof fn !== 'function') throw new HxError(`"${f.name ?? 'expresión'}" no es una función`, n.line);
     return fn(...args);
@@ -755,7 +941,7 @@ export class Interp {
       case '&': return a & b; case '|': return a | b; case '^': return a ^ b;
       case '<<': return a << b; case '>>': return a >> b; case '>>>': return a >>> b;
       case '...': return { __range: true, from: a, to: b, hasNext() { return false; }, next() { return null; } };
-      case 'is': return typeof b === 'function' ? a instanceof b : false;
+      case 'is': return b && b.__hxclass ? !!a && typeof a === 'object' && (a.__classes ?? []).includes(b) : typeof b === 'function' ? a instanceof b : false;
     }
     throw new HxError('operador no soportado: ' + op, n.line);
   }
@@ -766,6 +952,6 @@ export function str(v: any): string {
   if (v === null || v === undefined) return 'null';
   if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(v);
   if (Array.isArray(v)) return '[' + v.map(str).join(',') + ']';
-  if (typeof v === 'object') { if (v instanceof HxMap) return v.toString(); if (v.constructor === Object) return '{' + Object.entries(v).map(([k, x]) => `${k}: ${str(x)}`).join(', ') + '}'; }
+  if (typeof v === 'object') { if (v.__enum) return v.params.length ? `${v.name}(${v.params.map(str).join(',')})` : v.name; if (typeof v.toString === 'function' && v.__classes) return String(v.toString()); if (v instanceof HxMap) return v.toString(); if (v.constructor === Object) return '{' + Object.entries(v).map(([k, x]) => `${k}: ${str(x)}`).join(', ') + '}'; }
   return String(v);
 }
