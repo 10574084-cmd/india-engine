@@ -255,9 +255,12 @@ export class PlayState implements State {
     this.inst = e.audio.track(instBuf);
     this.songLength = instBuf.duration * 1000;
     if (song.needsVoices) {
-      const pv = await assets.songFile(sf, 'Voices-' + (this.boyfriendVocalName(song.player1))) ?? await assets.songFile(sf, 'Voices');
+      // Pico Mix (V-Slice): el archivo "Player" es la voz de BF, que aquí es el oponente
+      const swap = (song as any).format === 'psych_v1_convert' && /^pico/i.test(song.player1 ?? '');
+      const pn = swap ? 'Opponent' : 'Player', on = swap ? 'Player' : 'Opponent';
+      const pv = await assets.songFile(sf, 'Voices-' + (this.boyfriendVocalName(song.player1, pn))) ?? await assets.songFile(sf, 'Voices');
       if (pv) this.vocals = e.audio.track(pv);
-      const ov = await assets.songFile(sf, 'Voices-' + (this.boyfriendVocalName(song.player2, 'Opponent')));
+      const ov = await assets.songFile(sf, 'Voices-' + (this.boyfriendVocalName(song.player2, on)));
       if (ov) this.opponentVocals = e.audio.track(ov);
     }
     this.inst.pitch = this.playbackRate;
@@ -595,7 +598,7 @@ export class PlayState implements State {
     this.updateCamera(dt);
     this.updateHud(dt);
 
-    for (const o of [...this.layerBack, ...this.layerFront, ...this.layerHud, ...this.layerOther]) if (!(o instanceof Character)) o.update(dt);
+    for (const o of [...this.layerBack, ...this.layerFront, ...this.layerHud, ...this.layerOther]) if (!(o instanceof Character) || (o !== this.dad && o !== this.boyfriend && o !== this.gf)) o.update(o instanceof Character ? dt * rate : dt, ...(o instanceof Character ? [this.stepCrochet, rate] as [number, number] : [] as any));
     for (const c of Object.values(this.cams)) c.update(dt);
     this.tweens.update(dt);
     this.updateFx(dt);

@@ -9,25 +9,33 @@ interface Layer { frames: Frame[] }
 interface Timeline { layers: Layer[]; length: number }
 interface SpriteRect { x: number; y: number; w: number; h: number; img: CanvasImageSource }
 
-const mat = (m: any): Mat => m ? { a: m.m00, b: m.m01, c: m.m10, d: m.m11, tx: m.m30, ty: m.m31 } : { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+const mat = (m: any): Mat => !m ? { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 }
+  : Array.isArray(m) ? { a: m[0], b: m[1], c: m[4], d: m[5], tx: m[12], ty: m[13] }
+  : { a: m.m00, b: m.m01, c: m.m10, d: m.m11, tx: m.m30, ty: m.m31 };
+const LOOPS: Record<string, string> = { LP: 'loop', PO: 'play once', SF: 'single frame' };
+const TYPES: Record<string, string> = { G: 'graphic', MC: 'movieclip', B: 'button' };
 
 function parseTimeline(t: any): Timeline {
   const layers: Layer[] = []; let length = 0;
-  for (const L of t?.LAYERS ?? []) {
+  for (const L of t?.LAYERS ?? t?.L ?? []) {
     const frames: Frame[] = [];
-    for (const f of L.Frames ?? []) {
+    for (const f of L.Frames ?? L.FR ?? []) {
       const elements: Elem[] = [];
-      for (const e of f.elements ?? []) {
+      for (const e of f.elements ?? f.E ?? []) {
         if (e.SYMBOL_Instance) {
           const s = e.SYMBOL_Instance;
           elements.push({ sym: s.SYMBOL_name, m: mat(s.Matrix3D), type: s.symbolType ?? 'graphic', first: s.firstFrame ?? 0, loop: s.loop ?? 'loop' });
-        } else if (e.ATLAS_SPRITE_instance) {
-          const s = e.ATLAS_SPRITE_instance;
-          elements.push({ sprite: String(s.name), m: mat(s.Matrix3D), type: 'graphic', first: 0, loop: 'loop' });
+        } else if (e.SI) {
+          const s = e.SI;
+          elements.push({ sym: s.SN, m: mat(s.M3D), type: TYPES[s.ST] ?? 'graphic', first: s.FF ?? 0, loop: LOOPS[s.LP] ?? 'loop' });
+        } else if (e.ATLAS_SPRITE_instance || e.ASI) {
+          const s = e.ATLAS_SPRITE_instance ?? e.ASI;
+          elements.push({ sprite: String(s.name ?? s.N), m: mat(s.Matrix3D ?? s.M3D), type: 'graphic', first: 0, loop: 'loop' });
         }
       }
-      frames.push({ index: f.index, duration: f.duration, elements });
-      length = Math.max(length, f.index + f.duration);
+      const idx = f.index ?? f.I, du = f.duration ?? f.DU;
+      frames.push({ index: idx, duration: du, elements });
+      length = Math.max(length, idx + du);
     }
     layers.push({ frames });
   }
@@ -45,10 +53,10 @@ export class AnimateAtlas {
     if (!j) return null;
     const a = new AnimateAtlas();
     const an = j.ANIMATION ?? j.AN;
-    a.mainName = an?.SYMBOL_name ?? an?.name ?? '';
-    a.main = parseTimeline(an?.TIMELINE);
-    a.fps = j.metadata?.framerate ?? 24;
-    for (const s of j.SYMBOL_DICTIONARY?.Symbols ?? []) a.symbols.set(s.SYMBOL_name, parseTimeline(s.TIMELINE));
+    a.mainName = an?.SYMBOL_name ?? an?.SN ?? an?.name ?? an?.N ?? '';
+    a.main = parseTimeline(an?.TIMELINE ?? an?.TL);
+    a.fps = j.metadata?.framerate ?? j.MD?.FRT ?? 24;
+    for (const s of j.SYMBOL_DICTIONARY?.Symbols ?? j.SD?.S ?? []) a.symbols.set(s.SYMBOL_name ?? s.SN, parseTimeline(s.TIMELINE ?? s.TL));
     a.symbols.set(a.mainName, a.main);
     for (let i = 1; i < 20; i++) {
       const raw = await assets.text(`${dir}/spritemap${i}.json`); if (!raw) break;
@@ -58,6 +66,29 @@ export class AnimateAtlas {
       for (const s of sm.ATLAS?.SPRITES ?? []) { const r = s.SPRITE; a.sprites.set(String(r.name), { x: r.x, y: r.y, w: r.w, h: r.h, img: img.img as any }); }
     }
     return a;
+  }
+
+  /** caja envolvente aproximada de un frame (para flip / tamaño) */
+  measure(tl: Timeline, frame: number, m: Mat = { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 }, depth = 0, box = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 }) {
+    if (depth > 12) return box;
+    for (const L of tl.layers) {
+      const fr = L.frames.find(f => frame >= f.index && frame < f.index + f.duration); if (!fr) continue;
+      for (const e of fr.elements) {
+        const n: Mat = { a: m.a * e.m.a + m.c * e.m.b, b: m.b * e.m.a + m.d * e.m.b, c: m.a * e.m.c + m.c * e.m.d, d: m.b * e.m.c + m.d * e.m.d,
+          tx: m.a * e.m.tx + m.c * e.m.ty + m.tx, ty: m.b * e.m.tx + m.d * e.m.ty + m.ty };
+        if (e.sprite !== undefined) {
+          const sp = this.sprites.get(e.sprite); if (!sp) continue;
+          for (const [px, py] of [[0, 0], [sp.w, 0], [0, sp.h], [sp.w, sp.h]]) {
+            const X = n.a * px + n.c * py + n.tx, Y = n.b * px + n.d * py + n.ty;
+            box.x0 = Math.min(box.x0, X); box.y0 = Math.min(box.y0, Y); box.x1 = Math.max(box.x1, X); box.y1 = Math.max(box.y1, Y);
+          }
+        } else if (e.sym) {
+          const child = this.symbols.get(e.sym);
+          if (child && child.length > 0) this.measure(child, e.loop === 'loop' ? (e.first + frame - fr.index) % child.length : Math.min(e.first + frame - fr.index, child.length - 1), n, depth + 1, box);
+        }
+      }
+    }
+    return box;
   }
 
   length(symbol?: string) { return (symbol ? this.symbols.get(symbol) : this.main)?.length ?? 0; }

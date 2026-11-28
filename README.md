@@ -86,3 +86,9 @@ Limitaciones: shaders `dropShadow`/`textureSwap`/`rain` no se renderizan, y el p
 **HScript**: `class` (extends, static, propiedades get/set, `super`), `enum` (simples, con parámetros y `enum abstract`; los constructores también se pueden usar sin prefijo), `typedef`/`interface`/`abstract` (ignorados), `switch` con patrones (`case Run(s) if (s > 5)`, `a | b`, arrays, objetos), `switch` como expresión, literales regex `~/…/flags` (`EReg`), funciones sin llaves, `Std.isOfType`, `Type.*`, `Lambda.*` y más `StringTools`.
 
 **Lua**: `setCameraScroll`, `addCameraScroll`, `getCameraScrollX/Y`, `setCameraFollowPoint`, `addCameraFollowPoint`, `getCameraFollowX/Y`, `setSongPosition`, `luaDebugMode`, `getFileTranslation`, `callOnScripts`, `callOnHScript`, `setOnHScript`, `getOnHScript`, `setOnScripts`, `getOnScripts`.
+
+## Personajes Animate y voces de Pico Mix
+
+- Los personajes cuyo `image` es un atlas de Adobe Animate (`Animation.json` + `spritemap`, incluido el formato comprimido AN/SD/TL) ahora funcionan como `Character` (animaciones por símbolo + índices). Esto arregla las cinemáticas iniciales de Pico, Philly Nice y Blammed (dopplegangers).
+- Pico Mix: el archivo `Voices-Player` contiene la voz de BF (aquí el oponente), así que se intercambian las pistas cuando el chart es `psych_v1_convert` y el jugador es un `pico*`.
+- `getProperty/playAnim` encuentran objetos creados con `createInstance`; los personajes añadidos con `addInstance` se actualizan.

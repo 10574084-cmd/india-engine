@@ -382,6 +382,7 @@ export class ScriptHost {
     if (ps.luaTexts.has(p)) return ps.luaTexts.get(p);
     const r = this.rootObj(p);
     if (r !== undefined) return r;
+    if (this.vars.has(p)) return this.vars.get(p);
     const rr = this.resolve(p);
     if (!rr) return undefined;
     return rr.parent[rr.key as any];
