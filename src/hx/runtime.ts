@@ -68,11 +68,28 @@ export class HxRuntime implements HxHooks {
     return hole;
   }
 
+  private _gp: any = null;
+  /** `game` / `PlayState.instance`: el PlayState con los alias de Psych (camGame, camHUD, camOther…) */
+  gameProxy() {
+    if (this._gp) return this._gp;
+    const ps = this.ps;
+    const alias: Record<string, () => any> = {
+      camGame: () => ps.cams.game, camHUD: () => ps.cams.hud, camOther: () => ps.cams.other,
+      curStage: () => ps.stageName, SONG: () => ps.song, isStoryMode: () => !!ps.opts.isStory, camFollowPos: () => ps.camFollow, boyfriendGroup: () => ps.boyfriend, dadGroup: () => ps.dad, gfGroup: () => ps.gf,
+    };
+    return this._gp = new Proxy(ps as any, {
+      get: (t, k) => { const key = String(k); if (key in alias) return alias[key]();
+        if (/^(playerStrums|opponentStrums|strumLineNotes|unspawnNotes|notes)$/.test(key) && Array.isArray(t[key])) { const a = t[key]; if (!('members' in a)) Object.defineProperty(a, 'members', { get() { return this; }, enumerable: false }); return a; }
+        const v = t[key]; return typeof v === 'function' ? v.bind(t) : v; },
+      set: (t, k, v) => { t[String(k)] = v; return true; },
+    });
+  }
+
   // ----------------------------------------------------------- hooks del intérprete
   lookup(name: string): { found: boolean; value?: any } {
     const ps = this.ps;
     switch (name) {
-      case 'game': case 'instance': return { found: true, value: ps };
+      case 'game': case 'instance': return { found: true, value: this.gameProxy() };
       case 'boyfriend': case 'boyfriendGroup': return { found: true, value: ps.boyfriend ?? null };
       case 'dad': case 'dadGroup': return { found: true, value: ps.dad ?? null };
       case 'gf': case 'gfGroup': return { found: true, value: ps.gf ?? null };
@@ -100,6 +117,7 @@ export class HxRuntime implements HxHooks {
     const api = this.host.apiFns.get(name);
     if (api) return { found: true, value: api };
     if (name in (ps as any)) { const v = (ps as any)[name]; return { found: true, value: typeof v === 'function' ? v.bind(ps) : v }; }
+    const gv = this.gameProxy()[name]; if (gv !== undefined) return { found: true, value: gv };
     return { found: false };
   }
 
@@ -251,20 +269,42 @@ export class HxRuntime implements HxHooks {
     };
     const easeProxy = new Proxy({}, { get: (_t, k) => ease(String(k)) });
     const tween = (target: any, props: Record<string, number>, dur: number, o: any = {}) => {
+      const ty = typeof o.type === 'number' ? o.type : 8;
+      const handle: any = {};
       const t = ps().tweens.tween(target, props, dur, {
         ease: o.ease ?? 'linear', delay: o.startDelay ?? 0,
-        onComplete: typeof o.onComplete === 'function' ? () => o.onComplete({ }) : undefined,
-        onUpdate: typeof o.onUpdate === 'function' ? () => o.onUpdate({}) : undefined,
-        loop: o.type === 2 || o.type === 'looping' ? 'looping' : o.type === 4 || o.type === 'pingpong' ? 'pingpong' : 'none',
+        onComplete: typeof o.onComplete === 'function' ? () => o.onComplete(handle) : undefined,
+        onUpdate: typeof o.onUpdate === 'function' ? () => o.onUpdate(handle) : undefined,
+        loop: (ty & 2) || o.type === 'looping' ? 'looping' : (ty & 4) || o.type === 'pingpong' ? 'pingpong' : 'none',
       });
-      return { cancel: () => t.cancel(), get active() { return !t.finished; }, get finished() { return t.finished; } };
+      Object.defineProperties(handle, {
+        active: { get: () => !t.finished }, finished: { get: () => t.finished }, percent: { get: () => (t as any).progress ?? 0 },
+        target: { get: () => target }, duration: { get: () => dur },
+      });
+      handle.cancel = () => t.cancel(); handle.destroy = () => t.cancel(); handle.start = () => handle;
+      return handle;
     };
     const FlxTween = {
+      PERSIST: 1, LOOPING: 2, PINGPONG: 4, ONESHOT: 8, BACKWARD: 16,
       tween,
       num: (from: number, to: number, dur: number, o: any = {}, cb?: (v: number) => void) => { const h = { v: from }; return tween(h, { v: to }, dur, { ...o, onUpdate: () => cb?.(h.v) }); },
-      color: (_s: any, dur: number, from: number, to: number, o: any = {}) => { const h = { v: 0 }; const l = (a: number, b: number, t: number) => Math.round(a + (b - a) * t); return tween(h, { v: 1 }, dur, { ...o, onUpdate: (() => { const f = o.onUpdate; return () => { const c = ((l((from >> 16) & 255, (to >> 16) & 255, h.v) << 16) | (l((from >> 8) & 255, (to >> 8) & 255, h.v) << 8) | l(from & 255, to & 255, h.v)); if (typeof o.onColor === 'function') o.onColor(c); f?.(); }; })() }); },
+      angle: (obj: any, from: number, to: number, dur: number, o: any = {}) => { obj.angle = from; return tween(obj, { angle: to }, dur, o); },
+      color: (s: any, dur: number, from: number, to: number, o: any = {}) => { const h = { v: 0 }; const l = (a: number, b: number, t: number) => Math.round(a + (b - a) * t); return tween(h, { v: 1 }, dur, { ...o, onUpdate: (() => { const f = o.onUpdate; return (tw: any) => { const c = ((l((from >> 16) & 255, (to >> 16) & 255, h.v) << 16) | (l((from >> 8) & 255, (to >> 8) & 255, h.v) << 8) | l(from & 255, to & 255, h.v)); if (typeof o.onColor === 'function') o.onColor(c); else if (s && typeof s === 'object') s.color = c & 0xffffff; f?.(tw); }; })() }); },
       cancelTweensOf: (obj: any) => { for (const t of ps().tweens.tweens) if (t.target === obj) t.cancel(); },
-      globalManager: {},
+      completeTweensOf: (obj: any) => { for (const t of ps().tweens.tweens) if (t.target === obj) t.cancel(); },
+      globalManager: { clear() { ps().tweens.tweens.forEach(t => t.cancel()); }, cancelTweensOf: (obj: any) => { for (const t of ps().tweens.tweens) if (t.target === obj) t.cancel(); } },
+    };
+    const flicker = (obj: any, dur = 1, interval = 0.04, endVisible = true, _force = true, done?: (f: any) => void) => {
+      const n = Math.max(1, Math.round(dur / Math.max(interval, 0.001)));
+      const t = ps().tweens.timer(Math.max(interval, 0.001), n, tm => { obj.visible = !obj.visible; if (tm.finished || tm.elapsedLoops >= n) { obj.visible = endVisible; done?.({}); } });
+      return { stop() { t.cancel(); obj.visible = true; }, object: obj };
+    };
+    const FlxFlicker = { flicker, stopFlickering: (_o: any) => {}, isFlickering: (_o: any) => false };
+    const FlxSpriteUtil = {
+      flicker: (o: any, dur = 1, interval = 0.04, endVisible = true) => flicker(o, dur, interval, endVisible),
+      fadeIn: (o: any, t = 1, _ign = false, cb?: (x: any) => void) => { o.alpha = 0; return tween(o, { alpha: 1 }, t, { onComplete: cb }); },
+      fadeOut: (o: any, t = 1, cb?: (x: any) => void) => tween(o, { alpha: 0 }, t, { onComplete: typeof cb === 'function' ? cb : undefined }),
+      screenCenter: (o: any, axes = 'xy') => o.screenCenter?.(axes), isFlickering: () => false, stopFlickering: () => {},
     };
     const FlxColor: any = {
       BLACK: 0xff000000, WHITE: 0xffffffff, RED: 0xffff0000, GREEN: 0xff008000, BLUE: 0xff0000ff, YELLOW: 0xffffff00, ORANGE: 0xffffa500,
@@ -284,7 +324,11 @@ export class HxRuntime implements HxHooks {
       music: (k: string) => ({ __music: k }),
       font: (k: string) => k, txt: (k: string) => k, json: (k: string) => k, video: (k: string) => k,
       fileExists: (k: string) => e().assets.exists(k),
-      getPath: (k: string) => k,
+      getPath: (k: string) => k, getSharedPath: (k = '') => 'assets/shared/' + k, getPreloadPath: (k = '') => 'assets/' + k,
+      modFolders: (k: string) => 'mods/' + (e().assets.currentMod ? e().assets.currentMod + '/' : '') + k, mods: (k = '') => 'mods/' + k,
+      xml: (k: string) => k, lua: (k: string) => k, hx: (k: string) => k, voices: (k: string) => k, inst: (k: string) => k,
+      formatToSongPath: (k: string) => String(k).toLowerCase().replace(/ /g, '-'),
+      clearUnusedMemory: () => {}, clearStoredMemory: () => {}, excludeAsset: () => {}, currentTrackedAssets: new Map(),
     };
     const jsMath: any = {
       PI: Math.PI, NaN: NaN, POSITIVE_INFINITY: Infinity, NEGATIVE_INFINITY: -Infinity,
@@ -352,7 +396,7 @@ export class HxRuntime implements HxHooks {
     const Conductor = new Proxy({}, { get: (_t, k) => (ps().cond as any)[String(k)] });
     const ClientPrefs = { get data() { return ps().prefs; } };
     const PlayStateCls = new Proxy({}, {
-      get: (_t, k) => { const key = String(k); if (key === 'instance') return ps(); if (key === 'SONG') return ps().song; if (key === 'curStage') return ps().stageName; if (key === 'isStoryMode') return !!ps().opts.isStory; const v = (ps() as any)[key]; return typeof v === 'function' ? v.bind(ps()) : v; },
+      get: (_t, k) => { const key = String(k); if (key === 'instance') return ps(); if (key === 'SONG') return ps().song; if (key === 'createRuntimeShader') return (_n: string) => new (HxShaderRef.c)(); if (key === 'camGame') return ps().cams.game; if (key === 'camHUD') return ps().cams.hud; if (key === 'camOther') return ps().cams.other; if (key === 'camFollowPos') return ps().camFollow; if (key === 'curStage') return ps().stageName; if (key === 'isStoryMode') return !!ps().opts.isStory; const v = (ps() as any)[key]; return typeof v === 'function' ? v.bind(ps()) : v; },
       set: (_t, k, v) => { (ps() as any)[String(k)] = v; return true; },
     });
     const CoolUtil = {
@@ -360,19 +404,49 @@ export class HxRuntime implements HxHooks {
       boundTo: (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v)),
       coolTextFile: (_p: string) => [], formatSong: (s: string, d: string) => s + d,
     };
+    HxShaderRef.c = null as any;
+    class HxPoint {
+      constructor(public x = 0, public y = 0) {}
+      put() {} set(x = 0, y = x) { this.x = x; this.y = y; return this; } copyFrom(p: any) { this.x = p.x; this.y = p.y; return this; } copyTo(p: any) { p.x = this.x; p.y = this.y; return p; }
+      add(x = 0, y = 0) { this.x += x; this.y += y; return this; } subtract(x = 0, y = 0) { this.x -= x; this.y -= y; return this; }
+      addPoint(p: any) { this.x += p.x; this.y += p.y; return this; } subtractPoint(p: any) { this.x -= p.x; this.y -= p.y; return this; }
+      scale(x: number, y = x) { this.x *= x; this.y *= y; return this; } clone() { return new HxPoint(this.x, this.y); }
+      distanceTo(p: any) { return Math.hypot(this.x - p.x, this.y - p.y); } equals(p: any) { return this.x === p.x && this.y === p.y; }
+      get length() { return Math.hypot(this.x, this.y); } normalize() { const l = this.length; if (l) { this.x /= l; this.y /= l; } return this; }
+      rotate(_pivot: any, deg: number) { const r = deg * Math.PI / 180, c = Math.cos(r), sn = Math.sin(r); const x = this.x * c - this.y * sn, y = this.x * sn + this.y * c; this.x = x; this.y = y; return this; }
+      toString() { return `(x: ${this.x} | y: ${this.y})`; }
+    }
+    /** Shader de OpenFL/Flixel: solo guarda parámetros (solo adjustColor se emula en pantalla). */
+    class HxShader {
+      params = new Map<string, any>(); frag = ''; vert = '';
+      constructor(frag = '', vert = '') { this.frag = String(frag ?? ''); this.vert = String(vert ?? ''); warnShader(); }
+      setFloat(n: string, v: number) { this.params.set(n, v); } setFloatArray(n: string, v: number[]) { this.params.set(n, v); }
+      setInt(n: string, v: number) { this.params.set(n, v); } setIntArray(n: string, v: number[]) { this.params.set(n, v); }
+      setBool(n: string, v: boolean) { this.params.set(n, v); } setBoolArray(n: string, v: boolean[]) { this.params.set(n, v); }
+      setSampler2D(n: string, v: any) { this.params.set(n, v); } setSampler(n: string, v: any) { this.params.set(n, v); }
+      getFloat(n: string) { return this.params.get(n); } getFloatArray(n: string) { return this.params.get(n); } getInt(n: string) { return this.params.get(n); } getBool(n: string) { return this.params.get(n); }
+      get data(): any { const m = this.params; return new Proxy({}, { get: (_t, k) => new Proxy({}, { get: (_t2, kk) => kk === 'value' ? m.get(String(k)) : undefined, set: (_t2, kk, v) => { if (kk === 'value') m.set(String(k), v); return true; } }) }); }
+    }
+    HxShaderRef.c = HxShader;
+    let shaderWarned = false;
+    const warnShader = () => { if (!shaderWarned) { shaderWarned = true; console.warn('[HScript] shaders personalizados: parámetros guardados pero no se dibujan (solo adjustColor)'); } };
     const FlxAngle = { asRadians: (d: number) => d * Math.PI / 180, asDegrees: (r: number) => r * 180 / Math.PI, TO_RAD: Math.PI / 180, TO_DEG: 180 / Math.PI };
     return {
       String: TString, Int: TInt, Float: TFloat, Bool: TBool, Dynamic: TDynamic, Array: TArray, Type, Lambda,
-      FlxG, FlxTween, FlxEase: easeProxy, FlxColor, Paths, Math: jsMath, FlxMath, Std, StringTools, Reflect, Json, BlendMode, Conductor, ClientPrefs,
+      FlxG, FlxTween, FlxFlicker, FlxSpriteUtil, FlxEase: easeProxy, FlxColor, Paths, Math: jsMath, FlxMath, Std, StringTools, Reflect, Json, BlendMode, Conductor, ClientPrefs,
       PlayState: PlayStateCls, CoolUtil, FlxAngle, FlxSprite: Sprite, FlxText: TextObj, FlxCamera: Camera, Sprite, Map: HxMap, Sys: { time: () => performance.now() / 1000 },
       FlxTextBorderStyle: { NONE: 0, SHADOW: 1, OUTLINE: 2, OUTLINE_FAST: 3 }, FlxTextAlign: { LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFY: 'left' },
-      FlxAxes: { X: 'x', Y: 'y', XY: 'xy' }, FlxPoint: { get: (x = 0, y = 0) => ({ x, y }), weak: (x = 0, y = 0) => ({ x, y }) },
+      FlxAxes: { X: 'x', Y: 'y', XY: 'xy' }, FlxPoint: Object.assign(HxPoint, { get: (x = 0, y = 0) => new HxPoint(x, y), weak: (x = 0, y = 0) => new HxPoint(x, y) }),
+      FlxRuntimeShader: HxShader, FlxShader: HxShader, FlxGraphicsShader: HxShader, ShaderFilter: class { constructor(public shader: any) { warnShader(); } },
+      BitmapFilter: class {}, BlurFilter: class { constructor(public blurX = 4, public blurY = 4) {} }, ColorMatrixFilter: class { constructor(public matrix: any = null) {} }, GlowFilter: class {}, DropShadowFilter: class {},
       DateTools: { delta: (a: number, b: number) => a - b }, Date: { now: () => ({ getTime: () => Date.now() }) },
     };
   }
 }
 
 /** Un archivo .hx (o un bloque de runHaxeCode) con sus funciones de callback. */
+const HxShaderRef: { c: any } = { c: null };
+
 export class HxScript {
   rt: HxRuntime;
   closed = false;

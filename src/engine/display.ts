@@ -162,6 +162,17 @@ export class Camera {
   private shakeT = 0; private shakeDur = 0; private shakeI = 0;
   private flashT = 0; private flashDur = 0; private flashColor = 0xffffff;
   private fadeT = 0; private fadeDur = 0; private fadeColor = 0; private fadeIn = false; private fadeHold = false;
+  /** filtros de OpenFL/Flixel (solo se guardan; no se dibujan) */
+  filters: any[] = [];
+  setFilters(f: any[]) { this.filters = Array.isArray(f) ? f : []; }
+  pixelPerfectRender = false; antialiasing = true; color = 0xffffff; target: any = null; followLerp = 1;
+  get width() { return W; } get height() { return H; }
+  get scrollX() { return this.scroll.x; } set scrollX(v: number) { this.scroll.x = v; }
+  get scrollY() { return this.scroll.y; } set scrollY(v: number) { this.scroll.y = v; }
+  fill(color: number) { this.bgColor = color >>> 0; }
+  stopFX() { this.shakeT = this.flashT = this.fadeT = 0; this.fadeHold = false; }
+  stopFlash() { this.flashT = 0; } stopFade() { this.fadeT = 0; this.fadeHold = false; } stopShake() { this.shakeT = 0; }
+  setScrollBounds() {} setPosition(x = 0, y = 0) { this.x = x; this.y = y; }
   constructor(public name: string) {}
 
   shake(intensity: number, duration: number) { this.shakeI = intensity; this.shakeDur = this.shakeT = duration; }

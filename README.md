@@ -100,3 +100,11 @@ En **Options** hay un botón **Sserafim BF**. Al activarlo, Boyfriend (`bf`, `bf
 ## Menú "Mods" (portados) con búsqueda
 
 Nueva pantalla **Mods** en el menú principal: catálogo de mods ya portados (`src/builtin/portedMods.ts`; para añadir uno, agrega una entrada ahí). Tiene una barra con lupa: pulsa `/` (o haz clic en la barra) y escribe para filtrar por nombre, descripción o etiquetas. ENTER abre las canciones del mod en Freeplay (o activa/desactiva una skin).
+
+## Más compatibilidad (HScript/Lua de stages, tweens, cámaras)
+
+- HScript: `game.camGame/camHUD/camOther`, identificadores sueltos de PlayState (`curStage`, `SONG`, `isStoryMode`…), `game.playerStrums.members[i]`, `FlxPoint` completo, `FlxTween` (constantes `LOOPING/PINGPONG/ONESHOT`, `angle`, `color`, `completeTweensOf`, `onComplete(tween)`), `FlxFlicker`, `FlxSpriteUtil`, más funciones de `Paths`.
+- Shaders/filtros: `FlxRuntimeShader`, `ShaderFilter`, `createRuntimeShader`, `camera.setFilters([...])` y demás filtros de OpenFL se aceptan sin romper el script (solo `adjustColor` se dibuja).
+- `Camera`: `setFilters`, `fill`, `stopFX/stopFlash/stopFade/stopShake`, `scrollX/Y`, etc.
+- `triggerEvent('Change Character', …)` con un personaje no precargado lo carga bajo demanda.
+- Ventanas (mover/redimensionar la ventana del juego): no se soporta, a propósito.

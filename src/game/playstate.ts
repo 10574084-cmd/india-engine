@@ -774,7 +774,7 @@ export class PlayState implements State {
     this.scripts.callEventScript(name, [name, v1, v2, strumTime]);
   }
 
-  changeCharacter(which: 0 | 1 | 2, name: string) {
+  changeCharacter(which: 0 | 1 | 2, name: string, retried = false) {
     const assets = this.e.assets;
     try {
       if (which === 0) {
@@ -800,7 +800,8 @@ export class PlayState implements State {
       }
       this.updateHealthColors();
     } catch (err) {
-      console.warn('Change Character falló (¿no precargado?)', name, err);
+      if (!retried && /sin precargar/i.test(String((err as any)?.message))) { void preloadCharacter(assets, name).then(() => this.changeCharacter(which, name, true)); return; }
+      console.warn('Change Character falló', name, err);
     }
   }
   private swapChar(old: Character, nw: Character) {

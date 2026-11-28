@@ -70,6 +70,7 @@ export class Tween {
   private started = false;
   private forward = true;
   tag: string;
+  get progress() { return Math.min(1, Math.max(0, this.elapsed / Math.max(this.duration, 1e-6))); }
   constructor(public target: any, public to: Record<string, number>, public duration: number, public opts: TweenOpts = {}) {
     this.keys = Object.keys(to);
     this.fn = typeof opts.ease === 'function' ? opts.ease : ease(opts.ease as string);
