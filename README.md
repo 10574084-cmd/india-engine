@@ -96,3 +96,7 @@ Limitaciones: shaders `dropShadow`/`textureSwap`/`rain` no se renderizan, y el p
 ## Skin "Sserafim BF"
 
 En **Options** hay un botón **Sserafim BF**. Al activarlo, Boyfriend (`bf`, `bf-christmas`, `bf-car`, `bf-dark`) usa la skin de `public/skins/sserafim/` (los mods que traigan su propio BF siguen teniendo prioridad).
+
+## Menú "Mods" (portados) con búsqueda
+
+Nueva pantalla **Mods** en el menú principal: catálogo de mods ya portados (`src/builtin/portedMods.ts`; para añadir uno, agrega una entrada ahí). Tiene una barra con lupa: pulsa `/` (o haz clic en la barra) y escribe para filtrar por nombre, descripción o etiquetas. ENTER abre las canciones del mod en Freeplay (o activa/desactiva una skin).

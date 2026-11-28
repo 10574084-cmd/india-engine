@@ -3,6 +3,7 @@ import { Engine, State, ENGINE_NAME, ENGINE_VERSION } from '../engine/engine';
 import { W, H } from '../engine/display';
 import { getScore } from '../engine/save';
 import { PlayState } from '../game/playstate';
+import { PORTED_MODS, PortedMod } from '../builtin/portedMods';
 import { clearCharCache } from '../game/character';
 import { stageForSong } from '../game/chart';
 
@@ -48,7 +49,7 @@ export async function discoverSongs(e: Engine): Promise<SongEntry[]> {
 
 export const diffSuffix = (d: string) => (d.toLowerCase() === 'normal' ? '' : '-' + d.toLowerCase().replace(/ /g, '-'));
 
-type Screen = 'title' | 'main' | 'freeplay' | 'options' | 'credits';
+type Screen = 'title' | 'main' | 'freeplay' | 'mods' | 'options' | 'credits';
 
 export class MenuState implements State {
   screen: Screen = 'title';
@@ -58,6 +59,9 @@ export class MenuState implements State {
   t = 0;
   msg = '';
   private optSel = 0;
+  /** filtro de Freeplay por mod ('' = todos) */
+  filterMod = '';
+  query = ''; searchFocus = false; modSel = 0;
   private bg = 0x9271fd;
   private bgCur = 0x2b2b4a;
   constructor(private e: Engine, start: Screen = 'title') { this.screen = start; }
@@ -68,11 +72,33 @@ export class MenuState implements State {
     this.songs = await discoverSongs(this.e);
   }
 
+  /** canciones visibles en Freeplay (según el mod elegido en "Mods") */
+  get list(): SongEntry[] { return this.filterMod ? this.songs.filter(x => x.mod === this.filterMod) : this.songs; }
+
+  /** mods del catálogo + mods cargados que no están en él, filtrados por la búsqueda */
+  get modList(): { mod: PortedMod; installed: boolean }[] {
+    const have = (m: PortedMod) => m.kind === 'skin' ? this.e.vfs.has(`skins/${m.id}/characters/bf.json`) : this.e.vfs.mods.has(m.id);
+    const all = PORTED_MODS.map(m => ({ mod: m, installed: have(m) }));
+    for (const id of [...this.e.vfs.mods].sort()) if (!PORTED_MODS.some(m => m.id === id)) all.push({ mod: { id, name: id, kind: 'mod', author: 'Cargado por ti', tags: ['cargado'], desc: 'Mod cargado desde la barra superior.' }, installed: true });
+    const q = this.query.trim().toLowerCase();
+    return q ? all.filter(({ mod: m }) => (m.name + ' ' + m.desc + ' ' + m.tags.join(' ') + ' ' + m.author).toLowerCase().includes(q)) : all;
+  }
+  private modActive(m: PortedMod) { return m.kind === 'skin' ? this.e.prefs.sserafimBf : false; }
+  private activateMod(i: number) {
+    const e = this.modList[i]; if (!e) return;
+    if (!e.installed) { this.e.toast(`"${e.mod.name}" no está instalado en esta copia`, '#ffcc66', 4); return; }
+    if (e.mod.kind === 'skin') {
+      const p = this.e.prefs; p.sserafimBf = !p.sserafimBf; this.e.assets.skinSserafim = p.sserafimBf;
+      this.e.assets.clearVisualCaches(); clearCharCache(); this.e.savePrefs(); return;
+    }
+    this.filterMod = e.mod.id; this.screen = 'freeplay'; this.sel = 0; this.diffIdx = 0; this.e.input.setMouseVisible(false);
+  }
+
   reload() { void discoverSongs(this.e).then(s => { this.songs = s; }); }
 
   private items(): string[] {
     switch (this.screen) {
-      case 'main': return ['Freeplay', 'Options', 'Credits'];
+      case 'main': return ['Freeplay', 'Mods', 'Options', 'Credits'];
       default: return [];
     }
   }
@@ -98,7 +124,7 @@ export class MenuState implements State {
     ];
   }
 
-  keyDown(code: string) {
+  keyDown(code: string, ev?: KeyboardEvent) {
     const inp = this.e.input;
     const acts = inp.actionOf(code);
     const up = acts.includes('uiUp'), down = acts.includes('uiDown'), left = acts.includes('uiLeft'), right = acts.includes('uiRight');
@@ -110,16 +136,17 @@ export class MenuState implements State {
       if (up) this.sel = (this.sel + n - 1) % n;
       if (down) this.sel = (this.sel + 1) % n;
       if (back) this.screen = 'title';
-      if (ok) { this.screen = (['freeplay', 'options', 'credits'] as Screen[])[this.sel]; this.sel = 0; this.optSel = 0; this.diffIdx = 0; }
+      if (ok) { this.screen = (['freeplay', 'mods', 'options', 'credits'] as Screen[])[this.sel]; this.filterMod = ''; this.modSel = 0; this.query = ''; this.searchFocus = false; this.e.input.setMouseVisible(this.screen === 'mods'); this.sel = 0; this.optSel = 0; this.diffIdx = 0; }
       return;
     }
+    if (this.screen === 'mods') { this.modsKey(code, ev, { up, down, ok, back }); return; }
     if (this.screen === 'freeplay') {
-      const n = this.songs.length;
-      if (back) { this.screen = 'main'; this.sel = 0; return; }
+      const n = this.list.length;
+      if (back) { if (this.filterMod) { this.filterMod = ''; this.screen = 'mods'; this.sel = 0; this.e.input.setMouseVisible(true); } else { this.screen = 'main'; this.sel = 0; } return; }
       if (!n) return;
       if (up) { this.sel = (this.sel + n - 1) % n; this.diffIdx = 0; }
       if (down) { this.sel = (this.sel + 1) % n; this.diffIdx = 0; }
-      const s = this.songs[this.sel];
+      const s = this.list[this.sel];
       if (left) this.diffIdx = (this.diffIdx + s.diffs.length - 1) % s.diffs.length;
       if (right) this.diffIdx = (this.diffIdx + 1) % s.diffs.length;
       if (ok) void this.play(s);
@@ -134,10 +161,28 @@ export class MenuState implements State {
         if (left) { this.e.prefs.noteOffset -= 5; this.e.savePrefs(); }
         if (right) { this.e.prefs.noteOffset += 5; this.e.savePrefs(); }
       }
-      if (back) { this.screen = 'main'; this.sel = 1; }
+      if (back) { this.screen = 'main'; this.sel = 2; }
       return;
     }
-    if (this.screen === 'credits' && back) { this.screen = 'main'; this.sel = 2; }
+    if (this.screen === 'credits' && back) { this.screen = 'main'; this.sel = 3; }
+  }
+
+  private modsKey(code: string, ev: KeyboardEvent | undefined, a: { up: boolean; down: boolean; ok: boolean; back: boolean }) {
+    const n = this.modList.length;
+    if (code === 'Escape') { if (this.searchFocus) { this.searchFocus = false; return; } this.screen = 'main'; this.sel = 1; this.e.input.setMouseVisible(false); return; }
+    if (this.searchFocus) {
+      if (code === 'Enter') { this.searchFocus = false; return; }
+      if (code === 'Backspace') { this.query = this.query.slice(0, -1); this.modSel = 0; return; }
+      if (code === 'ArrowUp') { this.modSel = (this.modSel + n - 1) % Math.max(1, n); return; }
+      if (code === 'ArrowDown') { this.modSel = (this.modSel + 1) % Math.max(1, n); return; }
+      if (ev && ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && this.query.length < 30) { this.query += ev.key; this.modSel = 0; }
+      return;
+    }
+    if (code === 'Slash' || code === 'Tab' || (ev && ev.ctrlKey && code === 'KeyF')) { ev?.preventDefault(); this.searchFocus = true; return; }
+    if (!n) return;
+    if (a.up) this.modSel = (this.modSel + n - 1) % n;
+    if (a.down) this.modSel = (this.modSel + 1) % n;
+    if (a.ok) this.activateMod(this.modSel);
   }
 
   async play(s: SongEntry) {
@@ -155,10 +200,19 @@ export class MenuState implements State {
 
   update(dt: number) {
     this.t += dt;
-    if (this.screen === 'freeplay' && this.songs[this.sel]) this.bg = this.songs[this.sel].color;
+    if (this.screen === 'mods') { const inp = this.e.input; if (inp.mouseJustPressed(0)) this.modsClick(inp.mouseX, inp.mouseY); }
+    if (this.screen === 'freeplay' && this.list[this.sel]) this.bg = this.list[this.sel].color;
     else this.bg = 0x2b2b4a;
     const lerp = (a: number, b: number) => { const f = 1 - Math.exp(-dt * 5); const c = (s: number) => Math.round(((a >> s) & 255) + (((b >> s) & 255) - ((a >> s) & 255)) * f); return (c(16) << 16) | (c(8) << 8) | c(0); };
     this.bgCur = lerp(this.bgCur, this.bg);
+  }
+
+  private modsClick(mx: number, my: number) {
+    if (mx > 280 && mx < 1000 && my > 90 && my < 150) { this.searchFocus = true; return; }
+    this.searchFocus = false;
+    const first = Math.max(0, Math.min(Math.max(0, this.modList.length - 5), this.modSel - 2));
+    const k = Math.floor((my - 180) / 96);
+    if (mx > 240 && mx < 1040 && k >= 0 && k < 5 && first + k < this.modList.length) { this.modSel = first + k; this.activateMod(this.modSel); }
   }
 
   private text(ctx: CanvasRenderingContext2D, s: string, x: number, y: number, size: number, align: CanvasTextAlign = 'left', alpha = 1, color = '#fff') {
@@ -188,25 +242,51 @@ export class MenuState implements State {
       return;
     }
     if (this.screen === 'freeplay') {
-      if (!this.songs.length) {
+      if (!this.list.length) {
         this.text(ctx, 'No hay canciones.', W / 2, 300, 40, 'center');
         this.text(ctx, 'Carga los assets base o agrega un mod (.zip) desde la barra superior.', W / 2, 360, 22, 'center');
         return;
       }
-      const n = this.songs.length;
+      const n = this.list.length;
       for (let k = -4; k <= 4; k++) {
         const i = (((this.sel + k) % n) + n) % n; if (n < 2 * 4 + 1 && Math.abs(k) > Math.floor(n / 2)) continue;
-        const s = this.songs[i];
+        const s = this.list[i];
         this.text(ctx, s.song, 120 + Math.abs(k) * 22, 360 + k * 70, 48, 'left', k === 0 ? 1 : 0.45);
         if (s.mod) this.text(ctx, s.mod, 120 + Math.abs(k) * 22, 360 + k * 70 + 26, 16, 'left', k === 0 ? 0.8 : 0.3, '#ccc');
       }
-      const s = this.songs[this.sel], d = s.diffs[this.diffIdx % s.diffs.length];
+      const s = this.list[this.sel], d = s.diffs[this.diffIdx % s.diffs.length];
       ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(W - 420, 20, 400, 120);
       const sc = getScore(`${s.mod}|${s.song.toLowerCase().replace(/ /g, '-')}|${d}`);
       this.text(ctx, `Best: ${sc ? sc.score : 0}`, W - 400, 50, 28);
       this.text(ctx, `< ${d.toUpperCase()} >`, W - 400, 95, 28);
       this.text(ctx, `Stage: ${stageForSong({ song: s.song } as any)}`.replace(/^Stage: .*/, s.mod ? `Mod: ${s.mod}` : 'Base game'), W - 400, 125, 16, 'left', 0.7);
       this.text(ctx, 'ENTER: jugar   ESC: volver', W / 2, H - 24, 18, 'center', 0.7);
+      return;
+    }
+    if (this.screen === 'mods') {
+      this.text(ctx, 'MODS', W / 2, 50, 56, 'center');
+      ctx.save(); ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(280, 90, 720, 60);
+      ctx.strokeStyle = this.searchFocus ? '#7fe3ff' : 'rgba(255,255,255,.5)'; ctx.lineWidth = 3; ctx.strokeRect(280, 90, 720, 60);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(318, 118, 12, 0, 7); ctx.moveTo(327, 127); ctx.lineTo(340, 140); ctx.stroke(); ctx.restore();
+      const caret = this.searchFocus && Math.floor(this.t * 2) % 2 === 0 ? '|' : '';
+      this.text(ctx, this.query ? this.query + caret : (this.searchFocus ? caret : 'Escribe para buscar un mod…  (/ o clic)'), 360, 121, 26, 'left', this.query || this.searchFocus ? 1 : 0.45);
+      const list = this.modList, VIS = 5;
+      if (!list.length) this.text(ctx, 'Ningún mod coincide con la búsqueda.', W / 2, 330, 30, 'center', 0.8);
+      const first = Math.max(0, Math.min(Math.max(0, list.length - VIS), this.modSel - 2));
+      list.slice(first, first + VIS).forEach(({ mod: m, installed }, k) => {
+        const i = first + k, y = 180 + k * 96, sel = i === this.modSel;
+        ctx.save(); ctx.globalAlpha = sel ? 0.75 : 0.4; ctx.fillStyle = '#000'; ctx.fillRect(240, y, 800, 86); ctx.restore();
+        if (sel) { ctx.save(); ctx.strokeStyle = '#7fe3ff'; ctx.lineWidth = 3; ctx.strokeRect(240, y, 800, 86); ctx.restore(); }
+        const al = sel ? 1 : 0.65;
+        this.text(ctx, m.name, 262, y + 24, 32, 'left', al);
+        const st = !installed ? 'NO INSTALADO' : m.kind === 'skin' ? (this.modActive(m) ? 'ACTIVA' : 'INACTIVA') : 'INSTALADO';
+        this.text(ctx, st, 1020, y + 24, 20, 'right', al, !installed ? '#ff8f8f' : m.kind === 'skin' && !this.modActive(m) ? '#ccc' : '#7fff7f');
+        this.text(ctx, (m.kind === 'skin' ? 'Skin' : 'Mod') + ' · ' + m.author, 262, y + 52, 16, 'left', al * 0.8, '#ccc');
+        this.text(ctx, m.desc.length > 88 ? m.desc.slice(0, 86) + '…' : m.desc, 262, y + 72, 15, 'left', al * 0.8);
+      });
+      if (first > 0) this.text(ctx, '▲', W / 2, 170, 18, 'center', 0.6);
+      if (first + VIS < list.length) this.text(ctx, '▼', W / 2, 180 + VIS * 96, 18, 'center', 0.6);
+      this.text(ctx, '/ buscar   ↑↓ elegir   ENTER: abrir / activar   ESC: volver', W / 2, H - 24, 18, 'center', 0.7);
       return;
     }
     if (this.screen === 'options') {
