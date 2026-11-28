@@ -3,6 +3,7 @@ import { Engine, State, ENGINE_NAME, ENGINE_VERSION } from '../engine/engine';
 import { W, H } from '../engine/display';
 import { getScore } from '../engine/save';
 import { PlayState } from '../game/playstate';
+import { clearCharCache } from '../game/character';
 import { stageForSong } from '../game/chart';
 
 export interface SongEntry { song: string; mod: string; week: string; color: number; icon: string; diffs: string[]; weekName: string }
@@ -90,6 +91,8 @@ export class MenuState implements State {
       { name: 'Practice Mode', get: () => p.practice, set: () => { p.practice = !p.practice; } },
       { name: 'Hitsound', get: () => p.hitsoundVolume > 0, set: () => { p.hitsoundVolume = p.hitsoundVolume > 0 ? 0 : 0.5; } },
       { name: 'Time Bar: ' + p.timeBarType, get: () => true, set: () => { const o = ['Time Left', 'Time Elapsed', 'Song Name', 'Disabled'] as const; p.timeBarType = o[(o.indexOf(p.timeBarType) + 1) % 4]; } },
+      { name: 'Sserafim BF', toggle: true, desc: 'Skin de Boyfriend (Le Sserafim): BF, navidad, auto y oscuro.',
+        get: () => !!p.sserafimBf, set: () => { p.sserafimBf = !p.sserafimBf; this.e.assets.skinSserafim = p.sserafimBf; this.e.assets.clearVisualCaches(); clearCharCache(); } },
       ...BUILTIN_SCRIPTS.map(b => ({ name: b.name, toggle: true, desc: b.desc, get: () => !!p.scripts[b.id], set: () => { p.scripts[b.id] = !p.scripts[b.id]; } })),
       { name: 'Note Offset: ' + p.noteOffset + 'ms  (←/→)', get: () => true, set: () => {} },
     ];

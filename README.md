@@ -92,3 +92,7 @@ Limitaciones: shaders `dropShadow`/`textureSwap`/`rain` no se renderizan, y el p
 - Los personajes cuyo `image` es un atlas de Adobe Animate (`Animation.json` + `spritemap`, incluido el formato comprimido AN/SD/TL) ahora funcionan como `Character` (animaciones por símbolo + índices). Esto arregla las cinemáticas iniciales de Pico, Philly Nice y Blammed (dopplegangers).
 - Pico Mix: el archivo `Voices-Player` contiene la voz de BF (aquí el oponente), así que se intercambian las pistas cuando el chart es `psych_v1_convert` y el jugador es un `pico*`.
 - `getProperty/playAnim` encuentran objetos creados con `createInstance`; los personajes añadidos con `addInstance` se actualizan.
+
+## Skin "Sserafim BF"
+
+En **Options** hay un botón **Sserafim BF**. Al activarlo, Boyfriend (`bf`, `bf-christmas`, `bf-car`, `bf-dark`) usa la skin de `public/skins/sserafim/` (los mods que traigan su propio BF siguen teniendo prioridad).

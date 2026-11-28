@@ -47,6 +47,7 @@ export class Engine {
     this.input = new Input(this.prefs);
     this.input.attachCanvas(canvas);
     this.assets = new Assets(this.vfs, this.audio);
+    this.assets.skinSserafim = this.prefs.sserafimBf;
     this.input.onRawKey = (code, down, ev) => { if (down) this.state?.keyDown?.(code, ev); };
     const resize = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);

@@ -9,8 +9,12 @@ import { AudioSys } from './audio';
  *   4. assets/week_assets/<nivel>/ (directorio del stage)
  *   5. assets/shared/           6. assets/
  */
+const SSERAFIM_RE = /^(characters\/bf(-christmas|-car|-dark)?\.json|images\/characters\/(BOYFRIEND|bfChristmas|bfCar|dark\/bf_dark)\.(png|xml))$/i;
+
 export class Assets {
   currentMod = '';
+  /** skin alternativa de BF (carpeta skins/sserafim) */
+  skinSserafim = false;
   currentLevel: string | null = null;
   private imgCache = new Map<string, ImageBitmap>();
   private atlasCache = new Map<string, Atlas | null>();
@@ -27,6 +31,7 @@ export class Assets {
       out.push(`mods/${file}`);
       for (const g of this.vfs.globalMods) if (g !== this.currentMod) out.push(`mods/${g}/${file}`);
     }
+    if (this.skinSserafim && SSERAFIM_RE.test(file)) out.push(`skins/sserafim/${file}`);
     if (this.currentLevel && this.currentLevel !== 'shared') out.push(`assets/week_assets/${this.currentLevel}/${file}`);
     out.push(`assets/shared/${file}`, `assets/${file}`);
     return out;
@@ -164,6 +169,8 @@ export class Assets {
     } catch (e) { console.warn('Fuente no cargada', file, e); }
   }
 
+  /** descarta imágenes/atlas en caché (p. ej. al cambiar de skin) */
+  clearVisualCaches() { this.imgCache.clear(); this.atlasCache.clear(); this.missing.clear(); }
   clearMissing() { this.missing.clear(); }
 }
 
