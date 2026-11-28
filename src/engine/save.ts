@@ -8,6 +8,7 @@ export interface Prefs {
   hitsoundVolume: number; volume: number; flashing: boolean; comboStacking: boolean; botplay: boolean;
   scrollSpeed: number; practice: boolean; healthGain: number; healthLoss: number;
   scripts: Record<string, boolean>;
+  sserafimBf: boolean;
   keys: Record<string, string[]>;
 }
 
@@ -16,7 +17,7 @@ export const defaultPrefs = (): Prefs => ({
   noteOffset: 0, ratingOffset: 0, sickWindow: 45, goodWindow: 90, badWindow: 135,
   hideHud: false, timeBarType: 'Time Left', camZooms: true, scoreZoom: true, healthBarAlpha: 1,
   antialiasing: true, lowQuality: false, hitsoundVolume: 0, volume: 1, flashing: true, comboStacking: true, botplay: false,
-  scrollSpeed: 0, practice: false, healthGain: 1, healthLoss: 1, scripts: {},
+  scrollSpeed: 0, practice: false, healthGain: 1, healthLoss: 1, scripts: {}, sserafimBf: false,
   keys: {
     left: ['KeyA', 'ArrowLeft'], down: ['KeyS', 'ArrowDown'], up: ['KeyW', 'ArrowUp'], right: ['KeyD', 'ArrowRight'],
     accept: ['Enter', 'Space'], back: ['Escape', 'Backspace'], pause: ['Enter', 'Escape'], reset: ['KeyR'],

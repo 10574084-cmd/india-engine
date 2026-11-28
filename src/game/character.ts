@@ -15,7 +15,7 @@ export const clearCharCache = () => cache.clear();
 
 /** Carga (async) el JSON y el atlas de un personaje; luego `new Character` es síncrono. */
 export async function preloadCharacter(assets: Assets, name: string): Promise<void> {
-  const key = assets.currentMod + '|' + name;
+  const key = assets.currentMod + '|' + name + (assets.skinSserafim ? '|ss' : '');
   if (cache.has(key)) return;
   let json = await assets.json<CharacterFile>(`characters/${name}.json`);
   let missing = false;
@@ -57,7 +57,7 @@ export class Character extends Sprite {
   constructor(x: number, y: number, name: string, isPlayer: boolean, private assets: Assets) {
     super(x, y);
     this.curCharacter = name; this.isPlayer = isPlayer;
-    const l = cache.get(assets.currentMod + '|' + name);
+    const l = cache.get(assets.currentMod + '|' + name + (assets.skinSserafim ? '|ss' : ''));
     if (!l) throw new Error('Personaje sin precargar: ' + name);
     this.load(l);
   }

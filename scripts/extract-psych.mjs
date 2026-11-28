@@ -37,5 +37,6 @@ for (const mz of modZips) {
 const files = [];
 (function walk(d) { for (const f of readdirSync(d)) { const p = join(d, f); statSync(p).isDirectory() ? walk(p) : files.push(relative('public', p).replace(/\\/g, '/')); } })('public/assets');
 if (existsSync('public/mods')) (function walk(d) { for (const f of readdirSync(d)) { const p = join(d, f); statSync(p).isDirectory() ? walk(p) : files.push(relative('public', p).replace(/\\/g, '/')); } })('public/mods');
+if (existsSync('public/skins')) (function walk(d) { for (const f of readdirSync(d)) { const p = join(d, f); statSync(p).isDirectory() ? walk(p) : files.push(relative('public', p).replace(/\\/g, '/')); } })('public/skins');
 writeFileSync('public/vfs-manifest.json', JSON.stringify({ files }));
 console.log(`Listo: ${files.length} archivos en public/assets`);
